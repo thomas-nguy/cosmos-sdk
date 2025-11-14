@@ -2,6 +2,7 @@ package mempool
 
 import (
 	"context"
+	"cosmossdk.io/log"
 	"fmt"
 	"math"
 	"sync"
@@ -58,6 +59,7 @@ type (
 		senderIndices  map[string]*skiplist.SkipList
 		scores         map[txMeta[C]]txMeta[C]
 		cfg            PriorityNonceMempoolConfig[C]
+		logger         log.Logger
 	}
 
 	// PriorityNonceIterator defines an iterator that is used for mempool iteration
@@ -159,7 +161,7 @@ func skiplistComparable[C comparable](txPriority TxPriority[C]) skiplist.Compara
 
 // NewPriorityMempool returns the SDK's default mempool implementation which
 // returns txs in a partial order by 2 dimensions; priority, and sender-nonce.
-func NewPriorityMempool[C comparable](cfg PriorityNonceMempoolConfig[C]) *PriorityNonceMempool[C] {
+func NewPriorityMempool[C comparable](cfg PriorityNonceMempoolConfig[C], logger log.Logger) *PriorityNonceMempool[C] {
 	if cfg.SignerExtractor == nil {
 		cfg.SignerExtractor = NewDefaultSignerExtractionAdapter()
 	}
@@ -169,6 +171,7 @@ func NewPriorityMempool[C comparable](cfg PriorityNonceMempoolConfig[C]) *Priori
 		senderIndices:  make(map[string]*skiplist.SkipList),
 		scores:         make(map[txMeta[C]]txMeta[C]),
 		cfg:            cfg,
+		logger:         logger,
 	}
 
 	return mp
@@ -176,7 +179,7 @@ func NewPriorityMempool[C comparable](cfg PriorityNonceMempoolConfig[C]) *Priori
 
 // DefaultPriorityMempool returns a priorityNonceMempool with no options.
 func DefaultPriorityMempool() *PriorityNonceMempool[int64] {
-	return NewPriorityMempool(DefaultPriorityNonceMempoolConfig())
+	return NewPriorityMempool(DefaultPriorityNonceMempoolConfig(), nil)
 }
 
 // NextSenderTx returns the next transaction for a given sender by nonce order,
