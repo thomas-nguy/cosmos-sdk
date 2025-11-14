@@ -381,8 +381,9 @@ func (mp *PriorityNonceMempool[C]) doSelect(_ context.Context, _ [][]byte) Itera
 		return nil
 	}
 
-	mp.logger.Warn("priorityIndext", "lenght", mp.priorityIndex.Len())
+	mp.logger.Warn("priorityIndex", "length", mp.priorityIndex.Len())
 	mp.reorderPriorityTies()
+	mp.logger.Warn("priorityIndex after reorder", "length", mp.priorityIndex.Len())
 
 	iterator := &PriorityNonceIterator[C]{
 		mempool:       mp,

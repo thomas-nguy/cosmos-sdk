@@ -965,6 +965,7 @@ func (app *BaseApp) runTxWithMultiStore(
 		if err != nil {
 			if mode == execModeReCheck {
 				// if the ante handler fails on recheck, we want to remove the tx from the mempool
+				ctx.Logger().Warn("ante fails on recheck", "tx", tx, "err", err)
 				if mempoolErr := app.mempool.Remove(tx); mempoolErr != nil {
 					return gInfo, nil, anteEvents, errors.Join(err, mempoolErr)
 				}
@@ -984,6 +985,7 @@ func (app *BaseApp) runTxWithMultiStore(
 		}
 	} else if mode == execModeFinalize {
 		err = app.mempool.Remove(tx)
+		app.logger.Warn("Remove tx after execute", "tx", tx, "err", err)
 		if err != nil && !errors.Is(err, mempool.ErrTxNotFound) {
 			return gInfo, nil, anteEvents,
 				fmt.Errorf("failed to remove tx from mempool: %w", err)
