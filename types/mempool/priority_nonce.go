@@ -381,6 +381,7 @@ func (mp *PriorityNonceMempool[C]) doSelect(_ context.Context, _ [][]byte) Itera
 		return nil
 	}
 
+	mp.logger.Warn("priorityIndext", "lenght", mp.priorityIndex.Len())
 	mp.reorderPriorityTies()
 
 	iterator := &PriorityNonceIterator[C]{
@@ -396,6 +397,7 @@ func (mp *PriorityNonceMempool[C]) SelectBy(ctx context.Context, txs [][]byte, c
 	mp.mtx.Lock()
 	defer mp.mtx.Unlock()
 
+	mp.logger.Warn("start do select")
 	iter := mp.doSelect(ctx, txs)
 	for iter != nil && callback(iter.Tx()) {
 		iter = iter.Next()

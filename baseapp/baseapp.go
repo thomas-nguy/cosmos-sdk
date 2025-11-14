@@ -977,6 +977,7 @@ func (app *BaseApp) runTxWithMultiStore(
 	}
 
 	if mode == execModeCheck {
+		app.logger.Warn("InsertWithGasWanted")
 		err = app.mempool.InsertWithGasWanted(ctx, tx, gasWanted)
 		if err != nil {
 			return gInfo, nil, anteEvents, err

@@ -305,6 +305,7 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 			invalidTxs      []sdk.Tx // invalid txs to be removed out of the loop to avoid dead lock
 		)
 		mempool.SelectBy(ctx, h.mempool, req.Txs, func(memTx mempool.Tx) bool {
+			ctx.Logger().Warn("Callback Prepare Proposal")
 			signerData, err := h.signerExtAdapter.GetSigners(memTx.Tx)
 			if err != nil {
 				// propagate the error to the caller
@@ -341,7 +342,9 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 			// valid. But some mempool implementations may insert invalid txs, so we
 			// check again.
 			txBz, err := h.txVerifier.PrepareProposalVerifyTx(memTx.Tx)
+			ctx.Logger().Warn("Check err memtx", "err", err)
 			if err != nil {
+				ctx.Logger().Warn("add tx to invalid tx", "invalid tx count", len(invalidTxs))
 				invalidTxs = append(invalidTxs, memTx.Tx)
 			} else {
 				stop := h.txSelector.SelectTxForProposal(ctx, uint64(req.MaxTxBytes), maxBlockGas, memTx.Tx, txBz, memTx.GasWanted)
@@ -350,6 +353,7 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 				}
 
 				txsLen := len(h.txSelector.SelectedTxs(ctx))
+				ctx.Logger().Warn("Select tx for proposal", "len", txsLen)
 				for sender, seq := range txSignersSeqs {
 					// If txsLen != selectedTxsNums is true, it means that we've
 					// added a new tx to the selected txs, so we need to update
@@ -363,6 +367,8 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 						// to avoid unnecessary calls to PrepareProposalVerifyTx.
 						selectedTxsSignersSeqs[sender] = seq - 1
 					}
+
+					ctx.Logger().Warn("adding new tx and increase nonce", "sender", sender, "seq", seq)
 				}
 				selectedTxsNums = txsLen
 			}
@@ -376,6 +382,7 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 
 		for _, tx := range invalidTxs {
 			err := h.mempool.Remove(tx)
+			ctx.Logger().Warn("remove invalid tx", "err", err)
 			if err != nil && !errors.Is(err, mempool.ErrTxNotFound) {
 				return nil, err
 			}
