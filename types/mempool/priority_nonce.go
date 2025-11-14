@@ -271,12 +271,14 @@ func (mp *PriorityNonceMempool[C]) InsertWithGasWanted(ctx context.Context, tx s
 		})
 		mp.logger.Warn("Count down old priority", "old count", mp.priorityCounts[oldScore.priority], "new count", mp.priorityCounts[oldScore.priority]-1)
 		mp.priorityCounts[oldScore.priority]--
-		if mp.priorityCounts[priority] == 0 {
-			delete(mp.priorityCounts, priority)
+		if mp.priorityCounts[oldScore.priority] == 0 {
+			delete(mp.priorityCounts, oldScore.priority)
 		}
 
 		// delete from index
-		senderIndex.Remove(oldScore)
+		oldKey := txMeta[C]{nonce: oldScore.nonce, priority: oldScore.priority, sender: oldScore.sender}
+		senderIndex.Remove(oldKey)
+		mp.priorityIndex.Remove(oldKey)
 	}
 
 	mp.logger.Warn("Count up new priority", "old count", mp.priorityCounts[priority], "new count", mp.priorityCounts[priority]+1)
