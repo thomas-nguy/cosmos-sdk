@@ -228,9 +228,10 @@ func (mp *PriorityNonceMempool[C]) InsertWithGasWanted(ctx context.Context, tx s
 	priority := mp.cfg.TxPriority.GetTxPriority(ctx, tx)
 	nonce := sig.Sequence
 	key := txMeta[C]{nonce: nonce, priority: priority, sender: sender}
-
+	mp.logger.Warn("Insert new elements", "sender", sender, "nonce", nonce, "priority", priority)
 	senderIndex, ok := mp.senderIndices[sender]
 	if !ok {
+		mp.logger.Warn("Create new skiplist for sender", "sender", sender)
 		senderIndex = skiplist.New(skiplist.LessThanFunc(func(a, b any) int {
 			return skiplist.Uint64.Compare(b.(txMeta[C]).nonce, a.(txMeta[C]).nonce)
 		}))
@@ -248,7 +249,9 @@ func (mp *PriorityNonceMempool[C]) InsertWithGasWanted(ctx context.Context, tx s
 	// changes.
 	sk := txMeta[C]{nonce: nonce, sender: sender}
 	if oldScore, txExists := mp.scores[sk]; txExists {
+		mp.logger.Warn("Try replacement")
 		if mp.cfg.TxReplacement != nil && !mp.cfg.TxReplacement(oldScore.priority, priority, senderIndex.Get(key).Value.(Tx).Tx, tx) {
+			mp.logger.Warn("Cannot replace")
 			return fmt.Errorf(
 				"tx doesn't fit the replacement rule, oldPriority: %v, newPriority: %v, oldTx: %v, newTx: %v",
 				oldScore.priority,
@@ -258,15 +261,18 @@ func (mp *PriorityNonceMempool[C]) InsertWithGasWanted(ctx context.Context, tx s
 			)
 		}
 
+		mp.logger.Warn("Remove old tx")
 		mp.priorityIndex.Remove(txMeta[C]{
 			nonce:    nonce,
 			sender:   sender,
 			priority: oldScore.priority,
 			weight:   oldScore.weight,
 		})
+		mp.logger.Warn("Count down old priority", "old count", mp.priorityCounts[oldScore.priority], "new count", mp.priorityCounts[oldScore.priority]-1)
 		mp.priorityCounts[oldScore.priority]--
 	}
 
+	mp.logger.Warn("Count up new priority", "old count", mp.priorityCounts[priority], "new count", mp.priorityCounts[priority]+1)
 	mp.priorityCounts[priority]++
 
 	// Since senderIndex is scored by nonce, a changed priority will overwrite the
@@ -475,6 +481,7 @@ func (mp *PriorityNonceMempool[C]) Remove(tx sdk.Tx) error {
 
 	scoreKey := txMeta[C]{nonce: nonce, sender: sender}
 	score, ok := mp.scores[scoreKey]
+	mp.logger.Warn("Try remove Tx", "sender", sender, "nonce", nonce)
 	if !ok {
 		return ErrTxNotFound
 	}
@@ -485,9 +492,12 @@ func (mp *PriorityNonceMempool[C]) Remove(tx sdk.Tx) error {
 		return fmt.Errorf("sender %s not found", sender)
 	}
 
+	mp.logger.Warn("Remove from priority index", "sender", sender, "nonce", nonce)
 	mp.priorityIndex.Remove(tk)
+	mp.logger.Warn("Remove from skip list", "sender", sender, "nonce", nonce)
 	senderTxs.Remove(tk)
 	delete(mp.scores, scoreKey)
+	mp.logger.Warn("Remove from priority count", "old count", mp.priorityCounts[score.priority], "new count ", mp.priorityCounts[score.priority]-1)
 	mp.priorityCounts[score.priority]--
 
 	return nil
