@@ -403,7 +403,13 @@ func (mp *PriorityNonceMempool[C]) SelectBy(ctx context.Context, txs [][]byte, c
 	if iter != nil {
 		mp.logger.Warn("first tx", "tx", iter.Tx())
 	}
-	for iter != nil && callback(iter.Tx()) {
+
+	for iter != nil {
+		result := callback(iter.Tx())
+		mp.logger.Warn("callback result", "result", result)
+		if !result {
+			return
+		}
 		iter = iter.Next()
 		if iter != nil {
 			mp.logger.Warn("next tx", "tx", iter.Tx())

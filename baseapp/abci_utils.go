@@ -310,6 +310,7 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 			if err != nil {
 				// propagate the error to the caller
 				resError = err
+				ctx.Logger().Warn("get signer error return false", "resError", resError)
 				return false
 			}
 
@@ -317,6 +318,7 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 			// so we add them and continue given that we don't need to check the sequence.
 			shouldAdd := true
 			txSignersSeqs := make(map[string]uint64)
+			ctx.Logger().Warn("signer data", "length", len(signerData))
 			for _, signer := range signerData {
 				seq, ok := selectedTxsSignersSeqs[signer.Signer.String()]
 				ctx.Logger().Warn("selectedTxsSignersSeqs", "signer", signer.Signer.String(), "seq", seq)
@@ -357,7 +359,7 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 				}
 
 				txsLen := len(h.txSelector.SelectedTxs(ctx))
-				ctx.Logger().Warn("Select tx for proposal", "txsLen", txsLen, "txSignersSeqs", len(txSignersSeqs))
+				ctx.Logger().Warn("Select tx for proposal", "txsLen", txsLen, "selectedTxsNums", selectedTxsNums, "txSignersSeqs", len(txSignersSeqs))
 				for sender, seq := range txSignersSeqs {
 					// If txsLen != selectedTxsNums is true, it means that we've
 					// added a new tx to the selected txs, so we need to update
@@ -376,7 +378,7 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 				}
 				selectedTxsNums = txsLen
 			}
-
+			ctx.Logger().Warn("return true")
 			return true
 		})
 
