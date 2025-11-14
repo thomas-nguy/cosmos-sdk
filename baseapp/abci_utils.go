@@ -319,6 +319,7 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 			txSignersSeqs := make(map[string]uint64)
 			for _, signer := range signerData {
 				seq, ok := selectedTxsSignersSeqs[signer.Signer.String()]
+				ctx.Logger().Warn("selectedTxsSignersSeqs", "signer", signer.Signer.String(), "seq", seq)
 				if !ok {
 					txSignersSeqs[signer.Signer.String()] = signer.Sequence
 					continue
@@ -328,12 +329,15 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 				// sure that the current sequence is seq+1; otherwise is invalid
 				// and we skip it.
 				if seq+1 != signer.Sequence {
+					ctx.Logger().Warn("wrong sqs", "signer.Sequence", signer.Sequence, "seq", seq)
 					shouldAdd = false
 					break
 				}
+				ctx.Logger().Warn("add to map")
 				txSignersSeqs[signer.Signer.String()] = signer.Sequence
 			}
 			if !shouldAdd {
+				ctx.Logger().Warn("Should not add, return")
 				return true
 			}
 
@@ -353,7 +357,7 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 				}
 
 				txsLen := len(h.txSelector.SelectedTxs(ctx))
-				ctx.Logger().Warn("Select tx for proposal", "len", txsLen)
+				ctx.Logger().Warn("Select tx for proposal", "txsLen", txsLen, "txSignersSeqs", len(txSignersSeqs))
 				for sender, seq := range txSignersSeqs {
 					// If txsLen != selectedTxsNums is true, it means that we've
 					// added a new tx to the selected txs, so we need to update
