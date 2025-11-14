@@ -353,8 +353,10 @@ func (h *DefaultProposalHandler) PrepareProposalHandler() sdk.PrepareProposalHan
 				ctx.Logger().Warn("add tx to invalid tx", "invalid tx count", len(invalidTxs))
 				invalidTxs = append(invalidTxs, memTx.Tx)
 			} else {
+				ctx.Logger().Warn("SelectTxForProposal")
 				stop := h.txSelector.SelectTxForProposal(ctx, uint64(req.MaxTxBytes), maxBlockGas, memTx.Tx, txBz, memTx.GasWanted)
 				if stop {
+					ctx.Logger().Warn("should stop")
 					return false
 				}
 

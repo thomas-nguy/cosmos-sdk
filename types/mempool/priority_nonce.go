@@ -70,6 +70,7 @@ type (
 		senderCursors map[string]*skiplist.Element
 		sender        string
 		nextPriority  C
+		logger        log.Logger
 	}
 
 	// TxPriority defines a type that is used to retrieve and compare transaction
@@ -282,6 +283,7 @@ func (mp *PriorityNonceMempool[C]) InsertWithGasWanted(ctx context.Context, tx s
 	mp.scores[sk] = txMeta[C]{priority: priority}
 	mp.priorityIndex.Set(key, tx)
 
+	mp.logger.Warn("final state", "priority count", len(mp.priorityCounts), "score length", len(mp.scores), "senderIndices length", len(mp.senderIndices))
 	return nil
 }
 
@@ -296,40 +298,52 @@ func (mp *PriorityNonceMempool[C]) Insert(ctx context.Context, tx sdk.Tx) error 
 
 func (i *PriorityNonceIterator[C]) iteratePriority() Iterator {
 	// beginning of priority iteration
+	i.logger.Warn("start iteration, if not nil, get next")
 	if i.priorityNode == nil {
+		i.logger.Warn("initialize the priority node with the mempool priority index")
 		i.priorityNode = i.mempool.priorityIndex.Front()
 	} else {
+		i.logger.Warn("get the next entry from the priority node")
 		i.priorityNode = i.priorityNode.Next()
 	}
 
 	// end of priority iteration
 	if i.priorityNode == nil {
+		i.logger.Warn("seems no txs")
 		return nil
 	}
 
 	i.sender = i.priorityNode.Key().(txMeta[C]).sender
+	i.logger.Warn("current priority node", "sender", i.sender)
 
 	nextPriorityNode := i.priorityNode.Next()
 	if nextPriorityNode != nil {
 		i.nextPriority = nextPriorityNode.Key().(txMeta[C]).priority
+		i.logger.Warn("set next priority node", "sender", nextPriorityNode.Key().(txMeta[C]).sender, "priority", i.nextPriority)
 	} else {
 		i.nextPriority = i.mempool.cfg.TxPriority.MinValue
+		i.logger.Warn("set min value as no more node", "i.nextPriority", i.nextPriority)
 	}
 
 	return i.Next()
 }
 
 func (i *PriorityNonceIterator[C]) Next() Iterator {
+	i.logger.Warn("Next iterator")
 	if i.priorityNode == nil {
+		i.logger.Warn("priorityNode nil")
 		return nil
 	}
 
+	i.logger.Warn("get cursor for sender", "sender", i.sender)
 	cursor, ok := i.senderCursors[i.sender]
 	if !ok {
 		// beginning of sender iteration
+		i.logger.Warn("initialize cursor")
 		cursor = i.mempool.senderIndices[i.sender].Front()
 	} else {
 		// middle of sender iteration
+		i.logger.Warn("get next cursor")
 		cursor = cursor.Next()
 	}
 
@@ -340,19 +354,23 @@ func (i *PriorityNonceIterator[C]) Next() Iterator {
 
 	key := cursor.Key().(txMeta[C])
 
+	i.logger.Warn("current key", "sender", key.sender, "nonce", key.nonce, "priority", key.priority, "weight", key.weight)
 	// We've reached a transaction with a priority lower than the next highest
 	// priority in the pool.
 	if i.mempool.cfg.TxPriority.Compare(key.priority, i.nextPriority) < 0 {
+		i.logger.Warn(" We've reached a transaction with a priority lower")
 		return i.iteratePriority()
 	} else if i.priorityNode.Next() != nil && i.mempool.cfg.TxPriority.Compare(key.priority, i.nextPriority) == 0 {
 		// Weight is incorporated into the priority index key only (not sender index)
 		// so we must fetch it here from the scores map.
 		weight := i.mempool.scores[txMeta[C]{nonce: key.nonce, sender: key.sender}].weight
+		i.logger.Warn("Weight is incorporated into the priority index")
 		if i.mempool.cfg.TxPriority.Compare(weight, i.priorityNode.Next().Key().(txMeta[C]).weight) < 0 {
 			return i.iteratePriority()
 		}
 	}
 
+	i.logger.Warn("set cursor")
 	i.senderCursors[i.sender] = cursor
 	return i
 }
@@ -388,6 +406,7 @@ func (mp *PriorityNonceMempool[C]) doSelect(_ context.Context, _ [][]byte) Itera
 	iterator := &PriorityNonceIterator[C]{
 		mempool:       mp,
 		senderCursors: make(map[string]*skiplist.Element),
+		logger:        mp.logger,
 	}
 
 	return iterator.iteratePriority()
