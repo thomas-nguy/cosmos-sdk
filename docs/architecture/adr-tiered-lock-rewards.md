@@ -41,7 +41,7 @@ The tier module holds the locked tokens and is the delegator in `x/staking`; use
 - **Delegator in staking**: The **tier module account** is the delegator for all tier-locked delegations. Each position is delegated as a whole (full amount to one validator); the module stores per-position the validator address and the **delegated shares** returned by staking when delegating that amount. Base rewards are attributed to position owners when withdrawn. **No rewards (base or bonus) are paid unless the position is delegated** — lockers must delegate to a validator to earn rewards and thus provide security to the network.
 - **Bonus**: **Fixed APY** on the locked amount (or on the delegated amount), accrued over time **only while the position is delegated**, and paid from the tier rewards pool. No multiplier on base rewards.
 - **Exit commitment only**: User can trigger exit at any time. When they trigger exit, an exit commitment (X years, depending on tier) starts; once it has elapsed, no more bonus and they can claim tokens (after unbonding if delegated).
-- **Dependencies**: `x/distribution`, `x/staking`, `x/bank`, `x/auth`. Tier module calls staking to delegate/undelegate/redelegate from its module account and distribution to withdraw rewards.
+- **Dependencies**: `x/distribution`, `x/staking`, `x/bank`, `x/auth`. Tier module calls staking to delegate/undelegate/redelegate from its module account and distribution to withdraw rewards. So that **tier lockers can vote** in governance, the tier module exposes voting power per address and the app wires a custom gov tally that includes it (see **§8**).
 
 ---
 
@@ -304,22 +304,48 @@ No bonus is paid after `ExitUnlockTime`; this message only transfers tokens and 
 
 See **§4.5** for how base and bonus rewards are tracked and calculated.
 
+**Flow:** The module **withdraws the base reward first** (from `x/distribution` into the tier module), then **redistributes to the tier locker** (forwards base to the position owner and pays bonus from the tier pool to the owner).
+
 ```
 User -> MsgWithdrawTierRewards(position_id)
   -> Auth: signer == TierPosition.Owner
   -> Load TierPosition; must be delegated (Validator set)
-  -> Base: distribution.WithdrawDelegationRewards(ctx, tier_module_account, position.Validator)
-       (Distribution sends base rewards to tier module’s withdraw address; tier module then forwards owner’s share to position owner. If one position = one delegation, full amount goes to owner.)
-  -> Bonus (fixed APY): accrual_end = now; if exiting (ExitTriggeredAt set) and now > ExitUnlockTime, accrual_end = ExitUnlockTime (no bonus after)
+
+  --- Phase 1: Withdraw base reward ---
+  -> distribution.WithdrawDelegationRewards(ctx, tier_module_account, position.Validator)
+       (Distribution sends accrued base rewards to the tier module’s withdraw address.
+        The tier module receives the full base reward for this delegation; one position = one delegation, so the full amount is attributed to this position.)
+
+  --- Phase 2: Redistribute to the tier locker ---
+  -> Base: Send the base reward (received in Phase 1) from the tier module to the position owner.
+  -> Bonus (fixed APY):
+       accrual_end = block_time; if exiting (ExitTriggeredAt set) and block_time > ExitUnlockTime, accrual_end = ExitUnlockTime (no bonus after)
        accrued = amount_locked × tier.BonusAPY × (accrual_end - position.LastBonusAccrual) / 1 year
-       Cap to tier pool balance; pay from pool to owner in BonusDenoms
+       Cap to tier pool balance; send from tier rewards pool to position owner in BonusDenoms
   -> Update position.LastBonusAccrual = accrual_end
-  -> Send base share + bonus to owner
-  -> Emit event
+  -> Emit event (position_id, owner, base_amount, bonus_amount)
 ```
 
+- **Order of operations:** Base is withdrawn from distribution and received by the module **before** any redistribution. The module then redistributes to the tier locker: first the base reward to the owner, then the bonus (from the tier pool) to the owner. This ensures base rewards are settled with distribution first; only then does the module pay out to the position owner.
 - Base rewards: tier module is the delegator; its withdraw address can be set to itself so rewards arrive at the module, then the module attributes per position (by share of delegation) and sends to each owner when they call `WithdrawTierRewards`, or the module can use a single withdraw address per position (if the chain supports it). Simplest: one delegation per position so that a single withdraw gives one position’s base rewards to that owner.
 - **Fixed APY** is accrued over time from `LastBonusAccrual`; if the position is exiting, accrual stops at `ExitUnlockTime` (no bonus after). Cap bonus to pool balance so users do not fail on insufficient pool.
+
+#### Optimization: base reward withdrawal batching
+
+In standard Cosmos SDK staking, there is **one delegation per (delegator, validator)**. The tier module is a single delegator, so it has **one delegation per validator** (all positions on that validator are aggregated into one delegation in staking). Base rewards are therefore accrued once per validator; attributing to a position requires computing that position’s **share** of the validator’s delegation (e.g. `position.DelegatedShares / total_tier_shares_on_validator`).
+
+If every `MsgWithdrawTierRewards` called `distribution.WithdrawDelegationRewards(tier_module, position.Validator)`, the module would trigger one distribution withdrawal per user withdrawal. When many tier lockers are delegated to the same validator, that would cause redundant distribution calls and repeated withdrawal of the same logical reward pool (distribution updates delegator starting info after each withdraw, so later withdrawals in the same period would see reduced or zero new rewards unless we track a buffer).
+
+**Recommended optimization:** withdraw base rewards **once per validator per block** (or per batch), then attribute from a **pending base rewards** buffer when tier lockers withdraw.
+
+| Approach | Description |
+|----------|--------------|
+| **Lazy per-block** | On the **first** `MsgWithdrawTierRewards` in the block for a given validator `V`, call `distribution.WithdrawDelegationRewards(ctx, tier_module_account, V)`. Credit the received coins to a **pending base rewards** store keyed by validator (e.g. `PendingBaseRewards[V]`). For **every** `MsgWithdrawTierRewards` in that block (or in a later block, after a new withdrawal for `V` has run) for a position on `V`, compute the position’s share: `position.DelegatedShares / total_tier_delegated_shares_to_V`, send `share × PendingBaseRewards[V]` to the position owner, and deduct that amount from `PendingBaseRewards[V]`. So only **one** distribution withdrawal per validator per block, regardless of how many tier lockers on that validator withdraw. |
+| **EndBlocker top-up** | Optionally, in **EndBlocker**, for each validator that has tier positions, call `WithdrawDelegationRewards` and add to `PendingBaseRewards[V]`. Then during the next block, user withdrawals only consume from the buffer and never call distribution. This reduces distribution calls from message handlers but may do one withdrawal per validator every block; use if the number of validators with tier positions is small or if EndBlocker cost is acceptable. |
+
+**State:** Maintain `PendingBaseRewards[validator_addr] = sdk.Coins` (and optionally `LastWithdrawHeight[validator_addr]` if withdrawals are only allowed once per block per validator). Total tier shares per validator can be computed by iterating positions with that `Validator` or by maintaining a running total in state (updated on delegate / undelegate / redelegate).
+
+**Attribution:** When a position on validator `V` withdraws, `position_base_share = position.DelegatedShares / total_delegated_shares_to_V`. Send `position_base_share × PendingBaseRewards[V]` to the owner (per denom), then subtract that from `PendingBaseRewards[V]`. This keeps rewards proportional to delegation share and avoids calling distribution on every tier locker withdrawal.
 
 ### 5.7 Fund tier pool (authority or external)
 
@@ -341,18 +367,68 @@ Optional: restrict sender to governance or a dedicated “rewards treasury” mo
 - **Positions by owner:** `TierPositionsByOwner(owner, pagination)` – list all tier positions owned by an address (for wallets and UIs).
 - **All positions:** `AllTierPositions(pagination)` – list all tier positions in the system (for explorers and analytics).
 - **Estimate bonus:** `EstimateTierBonus(position_id)` – return estimated (base, bonus) for that position; useful for UX.
+- **Voting power:** `TierVotingPower(owner)` – return voting power (sum of `AmountLocked` for delegated positions owned by `owner`); used by gov tally and by UIs to show tier locker’s governance power.
 
 ---
 
 ## 7. Integration with Staking and Distribution
 
 - **Tier module as delegator:** The tier module account holds tier-locked tokens and is the **delegator** in `x/staking` for all tier delegations. The module calls `staking.Delegate`, `staking.Undelegate`, `staking.BeginRedelegate` with itself as delegator.
-- **Base rewards:** When the tier module receives base rewards from `x/distribution`, the module attributes them to positions and sends to owners when they call `MsgWithdrawTierRewards`. Distribution withdraw address for the tier module can be the module account so rewards are received there and then forwarded.
+- **Base rewards:** When the tier module receives base rewards from `x/distribution`, the module attributes them to positions and sends to owners when they call `MsgWithdrawTierRewards`. Distribution withdraw address for the tier module can be the module account so rewards are received there and then forwarded. In standard SDK staking there is one delegation per (delegator, validator), so the tier module has **one delegation per validator** (aggregate of all positions on that validator); base rewards are attributed to positions by share. To avoid triggering a distribution withdrawal on every tier locker withdrawal, see **§5.6 Optimization: base reward withdrawal batching** (withdraw once per validator per block and attribute from a pending buffer).
 - **Bonus:** Fixed APY is computed and paid from the tier pool on withdraw; no change to distribution logic.
 
 ---
 
-## 8. Tier-Locked Tokens: Delegate / Undelegate / Redelegate Only via Tier
+## 8. Governance voting for tier lockers
+
+Because the **tier module account** is the delegator in `x/staking`, staking-only governance tally attributes all tier-delegated voting power to the module address, not to the tier locker (position owner). Tier lockers would otherwise have no say in governance despite providing security via delegated tier positions. The following changes allow **tier lockers to vote with power proportional to their delegated tier-locked amount**.
+
+### 8.1 Requirement
+
+- Tier lockers vote using their **own address** (standard `MsgVote(proposal_id, option)` from `x/gov`).
+- A voter’s **total voting power** = (staking voting power from their direct delegations) **+** (voting power from their **delegated** tier positions).
+- Only positions that are **currently delegated** (`Validator` set) count; undelegated or unbonding positions do not count until they are delegated again.
+
+### 8.2 Tier module: voting power API
+
+The tier module must expose at least one of the following so that governance (or the app) can include tier power in the tally:
+
+| Method | Description |
+|--------|-------------|
+| **GetVotingPowerForAddress(ctx, voterAddr) math.LegacyDec** | Returns the **voting power** (in bond denom units) for the given address: sum of `position.AmountLocked` over all tier positions where `position.Owner == voterAddr` and `position.Validator != ""` (position is delegated). Use the same unit as staking (e.g. bond denom amount) so it can be added to staking voting power. After slashing, `AmountLocked` reflects the current value, so this stays correct. |
+| **TotalDelegatedVotingPower(ctx) math.LegacyDec** (optional) | Returns the sum of `AmountLocked` over all delegated positions. Used to include tier-delegated supply in the **total voting power** (quorum denominator) so that quorum and thresholds are consistent. If not implemented, quorum can remain staking-only (tier power only in the numerator). |
+
+Implementations may use `AmountLocked` as the voting power per position (bond denom); if the chain uses validator share–based power for staking, the tier module can instead convert `DelegatedShares` to tokens via the validator’s exchange rate for consistency.
+
+### 8.3 Gov (x/gov) changes
+
+`x/gov` tallies votes using each voter’s **staking** delegations only (`sk.IterateDelegations(ctx, voter, ...)`). The tier module is the delegator for tier positions, so those delegations do not appear under the tier locker’s address. To let tier lockers vote:
+
+- **Custom tally function:** Use the existing extension point **`WithCustomCalculateVoteResultsAndVotingPowerFn`** when constructing the gov keeper. The custom function:
+  1. Reuses the default logic to compute each voter’s **staking** voting power and add it to the tally (iterate delegations from the voter, add to results and total).
+  2. **For each voter,** calls the tier module’s **`GetVotingPowerForAddress(ctx, voterAddr)`** and adds that **tier voting power** to the same voter’s vote (same weight/options) and to `totalVotingPower`.
+  3. Optionally, for **quorum**, the total bonded supply used in the quorum check can include tier-delegated supply: e.g. `totalBonded = sk.TotalBondedTokens(ctx) + tierKeeper.TotalDelegatedVotingPower(ctx)`. If the gov keeper does not have access to the tier keeper, the app can inject a custom tally that uses it and, if needed, a separate mechanism to adjust the quorum denominator (e.g. gov params or a hook that returns “effective total bonded” including tier).
+
+- **Dependency:** Gov does not need to depend on the tier module at compile time; the **app** wires a `CalculateVoteResultsAndVotingPowerFn` that closes over the tier keeper (or an interface) and calls it when tallying. Gov’s `Tally()` continues to use `sk.TotalBondedTokens(ctx)` for quorum unless the app also provides a way to use an effective total that includes tier (e.g. custom tally that returns a different total, or a small change in `Tally` to accept an optional “total bonded” override).
+
+### 8.4 Summary of changes
+
+| Component | Change |
+|-----------|--------|
+| **Tier module** | Add `GetVotingPowerForAddress(ctx, voterAddr) math.LegacyDec` (sum of `AmountLocked` for delegated positions owned by `voterAddr`). Optionally add `TotalDelegatedVotingPower(ctx)` for quorum. |
+| **App / Gov wiring** | Construct gov keeper with `WithCustomCalculateVoteResultsAndVotingPowerFn(fn)` where `fn` adds tier voting power per voter (via tier keeper). Optionally include tier total in quorum denominator. |
+| **Voter experience** | Tier lockers vote with **MsgVote** as usual; no new message type. Their voting power automatically includes their delegated tier positions. |
+
+### 8.5 Edge cases
+
+- **Position not delegated:** No tier voting power for that position until the owner delegates via `MsgTierDelegate`.
+- **Slashing:** `AmountLocked` is updated on slash (§4.6); tier voting power uses the updated amount.
+- **Exit triggered, still delegated:** Position remains delegated until the owner calls `MsgTierUndelegate` and unbonding completes. Until then, it still counts for tier voting power.
+- **Unbonding after undelegate:** Once the position’s delegation is cleared (`Validator` empty), it no longer counts. During unbonding, implementation may still have `Validator` set until completion; the ADR leaves that to the implementation (either exclude unbonding positions from `GetVotingPowerForAddress` or clear `Validator` only on unbonding completion).
+
+---
+
+## 9. Tier-Locked Tokens: Delegate / Undelegate / Redelegate Only via Tier
 
 Tier-locked tokens **cannot** be delegated or redelegated using normal staking messages (undelegation only after trigger exit). They are **internal** to the tier mechanism:
 
@@ -362,7 +438,7 @@ Tier-locked tokens **cannot** be delegated or redelegated using normal staking m
 
 ---
 
-## 9. Edge Cases and Rules
+## 10. Edge Cases and Rules
 
 | Case | Behavior |
 |------|----------|
@@ -380,7 +456,7 @@ Tier-locked tokens **cannot** be delegated or redelegated using normal staking m
 
 ---
 
-## 10. Security and Invariants
+## 11. Security and Invariants
 
 - **Authority:** Only designated authority (e.g. gov) can update tier params and fund the pool.  
 - **Tier minimum lock:** For each tier, `MinLockAmount` is enforced on **MsgLockTier**: `amount >= tiers[tier_id].MinLockAmount`. Params must set `MinLockAmount` ≥ 0; implementations may require it to be positive for a tier to accept new locks.  
@@ -393,7 +469,7 @@ Tier-locked tokens **cannot** be delegated or redelegated using normal staking m
 
 ---
 
-## 11. Optional: Transfer tier position
+## 12. Optional: Transfer tier position
 
 If tier positions are **transferable**, add `MsgTransferTierPosition(sender, new_owner, position_id)`:
 
@@ -403,7 +479,7 @@ If tier positions are **transferable**, add `MsgTransferTierPosition(sender, new
 
 ---
 
-## 12. Optional: Distribution Hook for Base Attribution
+## 13. Optional: Distribution Hook for Base Attribution
 
 Because the **tier module** is the delegator in staking, base rewards are paid to the tier module. To attribute base rewards to individual positions (each position is one delegation, so attribution is per position), the chain can:
 
@@ -414,12 +490,12 @@ Bonus is **fixed APY** from the tier pool, not a multiplier on base; the hook wo
 
 ---
 
-## 13. Module Layout
+## 14. Module Layout
 
 ```
 x/tieredrewards/
   keeper/
-    keeper.go         # Keeper, params, pool balance, position store
+    keeper.go         # Keeper, params, pool balance, position store; GetVotingPowerForAddress (for gov tally)
     msg_server.go     # MsgLockTier, MsgAddToTierPosition, MsgTierDelegate, MsgTierUndelegate, MsgTierRedelegate, MsgTriggerExitFromTier, MsgWithdrawFromTier, MsgWithdrawTierRewards, MsgFundTierPool, MsgClaimExpiredTier, [MsgTransferTierPosition]
     query_server.go   # PositionByID, PositionsByOwner, AllTierPositions, params, pool
     position.go       # TierPosition CRUD, attribution
@@ -441,12 +517,13 @@ x/tieredrewards/
 
 ---
 
-## 14. Summary
+## 15. Summary
 
 - **Tier = lock duration + fixed bonus APY + minimum lock amount.** Each tier defines `MinLockAmount`; **MsgLockTier** requires `amount >= MinLockAmount` for that tier. **Rewards (base and bonus) are paid only when the position is delegated** to a validator, so lockers must provide security to the network to earn. **Undelegation is only allowed after the user has triggered exit** — tier lockers cannot voluntarily undelegate while in the tier. Tier-locked tokens are **internal** to the tier mechanism: **MsgTierDelegate**, **MsgTierRedelegate**, and **MsgTierUndelegate** (only after trigger exit) move stake; the tier module account is the delegator.  
 - **Tier positions are state records:** each lock is a `TierPosition` (position_id, owner, tier_id, amount_locked, created_at, exit_triggered_at, exit_unlock_time, validator, delegated_shares, last_bonus_accrual). A position cannot be broken down; the full amount is delegated to one validator. The owner can **add** to an existing position via `MsgAddToTierPosition` as long as exit has not been triggered. Store: `PositionByID`, `PositionsByOwner`, `AllTierPositions`.  
 - **Withdraw from tier:** User can trigger exit **at any time**. **MsgTriggerExitFromTier** starts the exit commitment (wait X years, per tier); once it has elapsed, **no more bonus** and **MsgWithdrawFromTier** claims tokens (after unbonding if delegated). Optional `MsgClaimExpiredTier` for positions past `ExitUnlockTime`.  
 - **Bonus = fixed APY** on locked amount, accrued over time and paid from a **tier rewards pool** when user calls `MsgWithdrawTierRewards` (and optionally on TierUndelegate/TierRedelegate).  
 - **Integration:** Tier module holds tokens and delegates via staking; base rewards received by module and attributed to positions; bonus from pool.  
+- **Governance voting:** Tier lockers vote with their address; voting power includes their delegated tier positions via a custom gov tally and tier’s `GetVotingPowerForAddress` (§8).  
 - **External pool:** Filled by governance or another module; tier module pays fixed-APY bonus from it.  
 - **Safety:** Cap bonus to pool balance; only tier module can delegate/undelegate/redelegate tier-locked tokens; single authority for params and funding.
