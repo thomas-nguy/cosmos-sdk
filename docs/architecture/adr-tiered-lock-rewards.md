@@ -7,9 +7,9 @@
 Allow users to **lock tokens into a tier** (e.g. 1, 2, or 5 years). Locked tokens are **internal to the tier mechanism**: they can only be delegated or redelegated **within** the tier module (undelegation only after trigger exit); (like internal liquid-stake tokens that cannot be used outside this system). **To receive any rewards, users must delegate their position to a validator**. This requirement ensures tier lockers provide security to the network. Users receive:
 
 - **Base rewards** from normal staking (block rewards, fees) **only when** their tier-locked tokens are delegated to validators.
-- **Bonus rewards** as a **decayed APY** on the locked amount (constant full APY until exit is triggered, then linear decay to 0 over the exit-commitment period), paid from an **external rewards pool**, **only when** the position is delegated to a validator.
+- **Bonus rewards** as a **fixed APY** on the locked amount (constant bonus APY, e.g. 4% per year), paid from an **external rewards pool**, **only when** the position is delegated to a validator. Bonus stops when the exit commitment has elapsed (no bonus after ExitUnlockTime).
 
-The tier module holds the locked tokens and is the delegator in `x/staking`; users operate via tier-specific messages. **Delegators can also commit an existing delegation to a tier without undelegating** (MsgCommitDelegationToTier: partial or full delegation to one validator; see §5.2). TierDelegate, TierRedelegate; **TierUndelegate is only allowed after the user has triggered exit** — tier lockers cannot voluntarily undelegate while in the tier, so they keep providing security until they leave). **Add to position:** the owner can **add tokens to an existing position** (same `position_id`) at any time, **including when the position is exiting**. **Withdraw from tier:** the user can **trigger exit at any time**. Once they trigger exit, an **exit commitment** starts (wait X years, depending on tier). **Once that commitment has elapsed**, no more bonus is paid and the user can claim their tokens (after unbonding if delegated). To unbond, the user must have triggered exit and then may call **MsgTierUndelegate**.
+The tier module holds the locked tokens and is the delegator in `x/staking`; users operate via tier-specific messages. **Delegators can also commit an existing delegation to a tier without undelegating** (MsgCommitDelegationToTier: partial or full delegation to one validator; see §5.2). TierDelegate, TierRedelegate; **TierUndelegate is only allowed after the user has triggered exit** — tier lockers cannot voluntarily undelegate while in the tier, so they keep providing security until they leave). **Add to position:** the owner can **add tokens to an existing position** (same `position_id`) **only when the position is not exiting** (reject if `ExitTriggeredAt != 0`). **Withdraw from tier:** the user can **trigger exit at any time**. Once they trigger exit, an **exit commitment** starts (wait X years, depending on tier). **Once that commitment has elapsed**, no more bonus is paid and the user can claim their tokens (after unbonding if delegated). To unbond, the user must have triggered exit and then may call **MsgTierUndelegate**.
 
 ### 1.2 Non-Goals
 
@@ -23,15 +23,15 @@ The tier module holds the locked tokens and is the delegator in `x/staking`; use
 
 | Term | Description |
 |------|-------------|
-| **Tier** | A lock level defined by an **exit commitment duration** (e.g. 1y, 2y, 5y wait after user triggers exit), an **initial bonus APY** (per year at the **start of the exit commitment**, i.e. when exit is triggered; e.g. 0.04 = 4%; it then decreases linearly to **0 at the end of the exit commitment**), and a **minimum lock amount** (smallest amount that can be locked when creating a position in this tier). |
+| **Tier** | A lock level defined by an **exit commitment duration** (e.g. 1y, 2y, 5y wait after user triggers exit), a **fixed bonus APY** (per year; e.g. 0.04 = 4%; constant rate), and a **minimum lock amount** (smallest amount that can be locked when creating a position in this tier). Bonus is paid at this fixed APY until the exit commitment has elapsed (no bonus after ExitUnlockTime). |
 | **Tier-locked tokens** | Tokens sent to the tier module when locking; they are **internal** to the mechanism. They can only be delegated/redelegated via tier messages; **undelegation is only allowed after the owner has triggered exit** (internal liquid-stake style). They cannot be used externally (no transfer out except via withdraw from tier). |
-| **Lock** | User sends tokens to the tier module and receives a **tier position**. **MsgLockTier** can optionally **delegate to a validator at lock time** (lock + delegate in one message) and optionally **trigger exit immediately** (decay starts from creation; otherwise decay starts when the user later calls MsgTriggerExitFromTier). The locked amount earns **no rewards** until delegated; once delegated, it earns base and **decayed APY** bonus. **Tier lockers cannot undelegate** until they have triggered exit. The owner can **add** to an existing position at any time, including when exiting. They can **relock** a position (MsgRelockTierPosition) with optional **trigger_exit_immediately** (same as MsgLockTier): if set, decay runs from relock time; otherwise exit state is cleared and full APY until they trigger exit later. Bonus clock always resets; no rewards are lost (accrued rewards settled and paid first). |
+| **Lock** | User sends tokens to the tier module and receives a **tier position**. **MsgLockTier** can optionally **delegate to a validator at lock time** (lock + delegate in one message) and optionally **trigger exit immediately** (exit commitment starts from creation; otherwise the user may trigger exit later via MsgTriggerExitFromTier). The locked amount earns **no rewards** until delegated; once delegated, it earns base and **fixed APY** bonus. **Tier lockers cannot undelegate** until they have triggered exit. The owner can **add** to an existing position **only when not exiting** (reject if exiting). **Relock** (MsgRelockTierPosition) is **allowed at any time**, including when exiting: accrued rewards to relock time are settled and paid first; then exit state is cleared (or set anew if trigger_exit_immediately) and the position **restarts from the relock date** (bonus clock and exit commitment reset from relock time). |
 | **Base rewards** | Staking rewards from `x/distribution` **only when** tier-locked tokens are delegated to validators (tier module is the delegator). No base rewards accrue while the position is not delegated. |
-| **Bonus rewards** | **Decayed APY** on the locked (or delegated) amount, **only while the position is delegated** to a validator. **Before exit is triggered**, the bonus APY is constant at InitialBonusAPY. **After exit is triggered**, decay starts: APY is InitialBonusAPY at trigger and decreases linearly to 0 at the end of the exit-commitment duration (see §4.1). Accrued bonus uses full APY for time before trigger and the decay integral for time after trigger; paid from the **tier rewards pool**. No bonus accrues when the position is not delegated. |
+| **Bonus rewards** | **Fixed APY** on the locked (or delegated) amount, **only while the position is delegated** to a validator. The bonus APY is constant at BonusApy. Accrued bonus = amount_locked × BonusApy × (duration in years); bonus stops at ExitUnlockTime (no bonus after the exit commitment has elapsed). Paid from the **tier rewards pool**. No bonus accrues when the position is not delegated. |
 | **Tier rewards pool** | Module account (or external keeper) holding coins used only to pay APY bonus. Filled by governance, grants, or another module. |
 | **Tier position** | A record stored in module state: unique position ID, owner, tier_id, **amount_locked**, optional exit triggered time and exit unlock time, optional validator and **delegated shares** (if delegated). A position **cannot be broken down**: the full amount is delegated to a single validator as a whole (all-or-nothing). |
 | **Withdraw from tier** | Two steps: (1) **Trigger exit** — user can trigger at any time. This starts the **exit commitment** (wait X years, depending on tier). (2) **Claim** — once the exit commitment has elapsed, no more bonus; user can claim tokens (after unbonding if delegated) and position is closed. |
-| **Relock position** | A tier staker can call **MsgRelockTierPosition(position_id [, trigger_exit_immediately])** to **relock** the position (same optional **trigger_exit_immediately** as MsgLockTier). If **trigger_exit_immediately** is true: `ExitTriggeredAt = block_time`, `ExitUnlockTime = block_time + ExitCommitmentDuration` (decay runs from relock time). If false or omitted: `ExitTriggeredAt = 0`, `ExitUnlockTime = 0` (clear exit state; full APY until they trigger exit later). Bonus clock is always reset (`DelegatedAtTime`, `LastBonusAccrual` = block_time). **No rewards are lost:** accrued bonus (and base if delegated) to relock time are **settled and paid first**. See §5.5. |
+| **Relock position** | **Allowed at any time**, including when the position is exiting. The owner calls **MsgRelockTierPosition(position_id [, trigger_exit_immediately])**: accrued rewards to relock time are settled and paid first; then exit state is **cleared** (or set anew if trigger_exit_immediately), and the position **restarts from the relock date** (bonus clock and exit commitment from relock time). Bonus is **fixed APY**. See §5.5. |
 | **Commit delegation to tier** | A delegator can turn **part or all** of an existing (user, validator) delegation into a tier position **without undelegating** (no unbonding). **MsgCommitDelegationToTier(tier_id, validator, amount)** transfers that **amount** (or the corresponding shares) from the user's delegation to the tier module (same validator). **Partial commit is allowed**; the amount must be ≤ the user's delegation to that validator and ≥ the tier's MinLockAmount. One message creates one tier position (one validator; the position itself cannot be broken down). Requires a chain extension to transfer delegation (see §5.2). |
 
 ---
@@ -41,7 +41,7 @@ The tier module holds the locked tokens and is the delegator in `x/staking`; use
 - **New module**: `x/tieredrewards` (or `x/lockrewards`).
 - **Tier-locked tokens**: Users **lock tokens** into the tier module (transfer to module account). Those tokens are **internal liquid-stake style**: they can only be **delegated** or **redelegated** via the tier module’s own messages; undelegation is only allowed after the user has triggered exit (tier lockers cannot voluntarily undelegate while in the tier). They cannot be used outside this mechanism (no external LST).
 - **Delegator in staking**: The **tier module account** is the delegator for all tier-locked delegations. Each position is delegated as a whole (full amount to one validator); the module stores per-position the validator address and the **delegated shares** returned by staking when delegating that amount. Base rewards are attributed to position owners when withdrawn. **No rewards (base or bonus) are paid unless the position is delegated** — lockers must delegate to a validator to earn rewards and thus provide security to the network.
-- **Bonus**: **Decayed APY** on the locked amount (or on the delegated amount): **before exit is triggered**, bonus APY is constant at InitialBonusAPY; **after exit is triggered**, it decays linearly to 0 over the exit-commitment duration. Accrued **only while the position is delegated**, paid from the tier rewards pool. No multiplier on base rewards.
+- **Bonus**: **Fixed APY** on the locked amount (or on the delegated amount): constant rate BonusApy (no decay). Accrued **only while the position is delegated**; bonus stops at ExitUnlockTime. Paid from the tier rewards pool. No multiplier on base rewards.
 - **Exit commitment only**: User can trigger exit at any time. When they trigger exit, an exit commitment (X years, depending on tier) starts; once it has elapsed, no more bonus and they can claim tokens (after unbonding if delegated).
 - **Dependencies**: `x/distribution`, `x/staking`, `x/bank`, `x/auth`. Tier module calls staking to delegate/undelegate/redelegate from its module account and distribution to withdraw rewards. For **MsgCommitDelegationToTier** (commit existing delegation without undelegating), the chain must provide a way to **transfer delegation** from one delegator to another (same validator, same shares, no unbonding) — e.g. a staking extension or app-level message (see §5.2). So that **tier lockers can vote** in governance, the tier module exposes voting power per address and the app wires a custom gov tally that includes it (see **§8**).
 
@@ -57,7 +57,7 @@ type TierDefinition struct {
     TierId                 uint32        // e.g. 1, 2, 3
     ExitCommitmentDuration time.Duration // e.g. 5*365*24*time.Hour; after user triggers exit, they must wait this before claim; no bonus after
     ExitCommitmentDurationInYears int64  // commitment duration in years 
-    InitialBonusAPY       sdk.Dec       // APY (per year) at the start of the exit commitment (when user triggers exit), before decay; e.g. 0.04 = 4% per year at t=0, linearly to 0 at t=1 (see §4.1 "Definition of InitialBonusAPY")
+    BonusApy       sdk.Dec       // Fixed bonus APY (per year); e.g. 0.04 = 4% per year; constant rate (see §4.1)
     MinLockAmount         math.Int      // minimum amount (in bond denom) required when creating a new position in this tier; enforced on MsgLockTier
 }
 
@@ -69,23 +69,22 @@ type Params struct {
 ```
 
 - **Minimum lock:** Each tier’s `MinLockAmount` must be ≥ 0 when params are set or updated; implementations may require it to be strictly positive for the tier to accept new locks. It is enforced only on **MsgLockTier** (new positions); **MsgAddToTierPosition** does not require the added amount to meet any minimum.
-- **ExitCommitmentDurationInYears:** When tier params are set or updated, set `tier.ExitCommitmentDurationInYears = ExitCommitmentDuration.Seconds() / SecondsPerYear` (using the chain's SecondsPerYear constant; result is an integer, e.g. 5 for a 5-year tier).
-- **Decayed APY (decay starts only when exit is triggered):** **Before the user triggers exit**, the bonus APY is **constant** at `InitialBonusAPY` (no decay). Accrued bonus for that period is `amount_locked × InitialBonusAPY × (duration in years)`. **After the user triggers exit**, decay runs: time is in **exit-commitment units** with origin at trigger: `t = (elapsed since ExitTriggeredAt) / ExitCommitmentDuration` (so t = 0 at trigger, t = 1 at ExitUnlockTime). The **APY at time t** (per year) is `APY(t) = max(0, InitialBonusAPY × (1 − t))`. Accrued bonus over an interval `[t0, t1]` in the exit-commitment period is the integral of `amount_locked × APY(t)` over time in years: `accrued_bonus = amount_locked × InitialBonusAPY × tier.ExitCommitmentDurationInYears × (t1 − t0) × (1 − (t1 + t0) / 2)`, paid from the tier pool in `BonusDenoms`. The position stores `DelegatedAtTime`, `LastBonusAccrual`, and when exiting `ExitTriggeredAt` and `ExitUnlockTime`, so both the pre-trigger (full APY) and post-trigger (decay) segments can be computed on withdraw. Cap t at 1 so no bonus accrues after ExitUnlockTime. **ExitCommitmentDurationInYears** (integer) is stored on the tier (set when params are updated: `ExitCommitmentDuration.Seconds() / SecondsPerYear`; **SecondsPerYear** is a chain constant, e.g. `365.25 × 24 × 3600`).
+- **ExitCommitmentDurationInYears:** When tier params are set or updated, result is an integer (e.g. 5 for a 5-year tier).
+- **Fixed APY:** The bonus rate is **constant** at `BonusApy` (e.g. 0.04 = 4% per year). **Formula:** `accrued_bonus = amount_locked × BonusApy × duration_years`, where `duration_years` is the time from `LastBonusAccrual` to the accrual end time, in years. When the position is exiting, accrual end is capped at `ExitUnlockTime` (no bonus after the exit commitment has elapsed). The position stores `LastBonusAccrual`; when exiting, `ExitUnlockTime` caps the accrual period. **SecondsPerYear** is a chain constant (e.g. `365.25 × 24 × 3600`) used to convert duration to years.
 
-#### Definition of InitialBonusAPY (with example)
+#### Definition of BonusApy (with example)
 
-**InitialBonusAPY** is the **APY (annual percentage yield, per year) at the start of the exit commitment (when the user triggers exit), before decay**. It is a decimal (e.g. 0.04 = 4% per year). **Before exit is triggered**, the bonus APY is constant at InitialBonusAPY. **After exit is triggered**, the decay clock starts: `t = (elapsed since ExitTriggeredAt) / ExitCommitmentDuration`; the bonus APY at time `t` is `APY(t) = InitialBonusAPY × (1 − t)`, so it starts at InitialBonusAPY and decreases linearly to 0 when t = 1 (at ExitUnlockTime).
+**BonusApy** is the **fixed bonus APY (annual percentage yield, per year)**. It is a decimal (e.g. 0.04 = 4% per year). The rate is constant (no decay).
 
-- **Meaning:** If a tier has `ExitCommitmentDuration = 5 years` and `InitialBonusAPY = 0.04`, then **before exit is triggered** the bonus APY is **4% per year** (constant). When the user triggers exit, t = 0 and the APY is still 4%; it then decreases linearly and reaches **0** exactly at ExitUnlockTime (5 years after trigger, t = 1). So InitialBonusAPY is the headline APY at the moment exit is triggered; decay runs only over the exit-commitment window.
-- **Example — total bonus:** (1) **Before trigger:** e.g. delegated for 3 years without exiting → bonus = `amount_locked × 0.04 × 3` = 12% of amount. (2) **Full decay period after trigger:** If the position stays delegated for the entire exit-commitment duration after trigger (from t = 0 to t = 1), the bonus in that segment is `amount_locked × InitialBonusAPY × ExitCommitmentDurationInYears × 0.5`. So with **InitialBonusAPY = 0.04** and **ExitCommitmentDurationInYears = 5**, that segment yields **10% of `amount_locked`** (0.04 × 5 × 0.5 = 0.10). Total bonus = pre-trigger (full APY × years) + post-trigger (decay integral). If accrual stays past t = 1, no further bonus (APY is 0 for t ≥ 1).
+**Bonus formula:**
 
-#### Math verification (bonus formula)
+`accrued_bonus = amount_locked × BonusApy × duration_years`
 
-- **Pre-trigger:** Bonus APY = InitialBonusAPY (constant). Accrued = `amount_locked × InitialBonusAPY × (duration in years)`.
-- **Post-trigger (decay):** **t** is dimensionless: `t = (elapsed since ExitTriggeredAt) / ExitCommitmentDuration`, so t ∈ [0, 1] over the exit-commitment period (until ExitUnlockTime).
-- **APY(t)** (per year) is `InitialBonusAPY × (1 − t)`. Over a small interval dt in t-units, the time in years is `ExitCommitmentDurationInYears × dt`, so the accrual is `amount_locked × InitialBonusAPY × ExitCommitmentDurationInYears × (1−t) dt`.
-- **Integral** from t0 to t1: `amount_locked × InitialBonusAPY × ExitCommitmentDurationInYears × ( (t1−t0) × (1 − (t1+t0)/2) )`.
-- **Full decay period [0, 1]:** the integral equals **0.5**, giving bonus in that segment = `amount_locked × InitialBonusAPY × ExitCommitmentDurationInYears × 0.5` (e.g. 10% for 4% APY over 5 years of exit commitment).
+- `duration_years` = (accrual end time − `LastBonusAccrual`) converted to years (e.g. seconds ÷ SecondsPerYear).
+- Accrual end time = `min(block_time, ExitUnlockTime)` when the position is exiting; otherwise `block_time`.
+- Bonus accrual stops at `ExitUnlockTime` (no bonus for time after the exit commitment has elapsed).
+
+**Example:** `BonusApy = 0.04`, position delegated for 3 years (before ExitUnlockTime): bonus = `amount_locked × 0.04 × 3` = 12% of amount. For 1,000 tokens → 120 tokens of bonus over 3 years.
 
 ### 4.2 Tier positions (state)
 
@@ -106,7 +105,7 @@ type TierPosition struct {
     // Delegation state: position is either not delegated (Validator empty) or fully delegated to one validator.
     Validator        string   // validator operator address if delegated; empty if not
     DelegatedShares  sdk.Dec  // validator delegation shares for this position (see 4.2.1)
-    DelegatedAtTime  time.Time // when the current delegation started (for bonus accrual; decay uses ExitTriggeredAt when exiting)
+    DelegatedAtTime  time.Time // when the current delegation started (for bonus accrual; fixed APY)
     LastBonusAccrual time.Time // last time bonus was accrued (upper bound of last accrual period)
 }
 
@@ -116,16 +115,16 @@ type TierPosition struct {
 // - NextPositionId:     next uint64
 ```
 
-- **Lock into tier:** User sends `MsgLockTier(tier_id, amount)` with optional **validator** (delegate at lock time) and optional **trigger_exit_immediately** (decay starts from creation). The amount must be **≥** the tier’s **MinLockAmount**. Tokens are transferred to the tier module account; module creates a `TierPosition`. If **validator** is set, the module immediately delegates the full amount to that validator. If **trigger_exit_immediately** is set, the module sets `ExitTriggeredAt` and `ExitUnlockTime` so the position is exiting and **decay starts from lock time**; otherwise the user can trigger exit later via MsgTriggerExitFromTier. Multiple positions per owner allowed.
+- **Lock into tier:** User sends `MsgLockTier(tier_id, amount)` with optional **validator** (delegate at lock time) and optional **trigger_exit_immediately** (exit commitment starts from creation). The amount must be **≥** the tier’s **MinLockAmount**. Tokens are transferred to the tier module account; module creates a `TierPosition`. If **validator** is set, the module immediately delegates the full amount to that validator. If **trigger_exit_immediately** is set, the module sets `ExitTriggeredAt` and `ExitUnlockTime` so the position is exiting and **exit commitment starts from lock time**; otherwise the user can trigger exit later via MsgTriggerExitFromTier. Multiple positions per owner allowed.
 - **Commit existing delegation to tier:** User sends **MsgCommitDelegationToTier(tier_id, validator, amount)** to turn **part or all** of their existing delegation to that validator into a tier position **without undelegating** (no unbonding). **Partial commit is allowed.** Verification: signer must have delegation to that validator ≥ amount; amount ≥ tier MinLockAmount; amount > 0. The specified amount (and corresponding shares) is transferred to the tier module (same validator). One message creates one tier position (one validator; the position cannot be split across validators). Requires a staking/chain extension for delegation transfer (see §5.2).
-- **Add to position:** Owner can send `MsgAddToTierPosition(position_id, amount)` to add tokens to an **existing** position. **Allowed at any time**, including when the position is exiting (`ExitTriggeredAt` set). See §4.6 for what is updated on add.
+- **Add to position:** Owner can send `MsgAddToTierPosition(position_id, amount)` to add tokens to an **existing** position. **Not allowed when the position is exiting** — reject if `ExitTriggeredAt != 0`. See §4.6 for what is updated on add.
 - **Delegation:** When the user calls `MsgTierDelegate(position_id, validator)`, the module delegates the **full** `amount_locked` to that validator (position cannot be split). The staking module returns **shares** for that delegation; the tier module stores them in `DelegatedShares` (see §4.2.1). **Only once delegated** do base and bonus rewards accrue; bonus APY accrues on `amount_locked` from the time of delegation (see §4.5).
 
 #### 4.2.1 Delegated shares calculation
 
 A tier position is always delegated as a **whole**: the full `amount_locked` is delegated in a single `staking.Delegate` call. The **delegated shares** are the shares returned by the staking module for that delegation.
 
-- **On delegate:** The tier module calls `stakingKeeper.Delegate(ctx, tierModuleAccount, validator, position.AmountLocked)` (bond denom). The staking module converts the token amount to validator delegation shares using the validator’s current exchange rate (tokens per share) and returns the `newShares` created. The tier module sets `position.Validator = validator`, `position.DelegatedShares = newShares`, `position.DelegatedAtTime = block_time`, and `position.LastBonusAccrual = block_time` so that bonus (and base) rewards accrue only from delegation time and decay is measured from this time.
+- **On delegate:** The tier module calls `stakingKeeper.Delegate(ctx, tierModuleAccount, validator, position.AmountLocked)` (bond denom). The staking module converts the token amount to validator delegation shares using the validator’s current exchange rate (tokens per share) and returns the `newShares` created. The tier module sets `position.Validator = validator`, `position.DelegatedShares = newShares`, `position.DelegatedAtTime = block_time`, and `position.LastBonusAccrual = block_time` so that bonus (and base) rewards accrue only from delegation time and fixed APY from delegation time.
 - **On undelegate:** Allowed **only when the position has triggered exit** (`ExitTriggeredAt != 0`). The tier module calls `stakingKeeper.Undelegate(ctx, tierModuleAccount, position.Validator, position.DelegatedShares)` — the **full** shares for this position. No partial undelegate; the position’s entire delegation is unbonded. While the user has not triggered exit, **MsgTierUndelegate** is rejected so that tier lockers stay delegated and keep providing security.
 - **On redelegate:** The tier module calls `stakingKeeper.BeginRedelegate(ctx, tierModuleAccount, position.Validator, dstValidator, position.DelegatedShares)`. The full shares are moved to the destination validator; when the redelegation completes, the position’s `Validator` is updated to the destination and `DelegatedShares` is set to the **new shares** on the destination validator (staking returns the shares issued on the destination; that value is stored).
 
@@ -156,7 +155,7 @@ Recommendation: **Module account** for simplicity; an optional **external funder
 
 ### 4.5 How tier rewards are tracked and calculated
 
-Tier rewards consist of **base rewards** (from staking/distribution) and **bonus rewards** (decayed APY from the tier pool). They are tracked and calculated as follows.
+Tier rewards consist of **base rewards** (from staking/distribution) and **bonus rewards** (fixed APY from the tier pool). They are tracked and calculated as follows.
 
 #### Base rewards (staking)
 
@@ -166,28 +165,24 @@ Tier rewards consist of **base rewards** (from staking/distribution) and **bonus
 - **Tier's use:** The **tier module account** is the delegator. Each tier position is one delegation (full amount to one validator), so there is a 1:1 mapping: one position ⇒ one (tier_module, validator) delegation in staking. When the owner calls `MsgWithdrawTierRewards(position_id)`, the tier module calls `distribution.WithdrawDelegationRewards(ctx, tier_module_account, position.Validator)`. Distribution computes the accrued base rewards for that delegation from its stored ratios and starting info, sends the coins to the tier module's withdraw address, and updates the delegator's starting info. The tier module then sends that full amount to the position owner (no splitting, because one position = one delegation).
 - **No per-position base state in tier:** The tier module does not duplicate distribution's reward state; it only stores which validator (and shares) each position has, so it knows which delegation to withdraw for when the user withdraws rewards.
 
-#### Bonus rewards (decayed APY)
+#### Bonus rewards (fixed APY)
 
 - **Where they are tracked:** In the tier module, **per position**:
-  - **`DelegatedAtTime`** (time): when the current delegation started; used for bonus accrual start. **Before exit is triggered**, bonus uses full APY over time since delegation (or since LastBonusAccrual).
-  - **`LastBonusAccrual`** (time): the last time up to which bonus has been accrued (and paid or committed). Bonus for the interval from `LastBonusAccrual` to the accrual end time is computed and paid when the user withdraws; then `LastBonusAccrual` is set to that end time.
-  - **`ExitTriggeredAt`**, **`ExitUnlockTime`** (when exiting): used so that **decay** runs only after exit is triggered; t = (time − ExitTriggeredAt) / ExitCommitmentDuration.
-- **How they are calculated:** When paying tier rewards (e.g. in `MsgWithdrawTierRewards`), **the position must be delegated** (`Validator` set); otherwise skip bonus (and base is already zero when not delegated). Steps:
-  1. **Accrual end time:** `accrual_end = block_time`. If the position is exiting (`ExitTriggeredAt` set) and `block_time > ExitUnlockTime`, set `accrual_end = ExitUnlockTime` so no bonus is paid for time after the exit commitment has elapsed.
-  2. **Two segments (decay starts only when exit is triggered):**
-     - **Segment A — before exit trigger (full APY):** If the position has **not** triggered exit, the whole accrual period uses full APY. If the position **has** triggered exit, only the part of the period **before** `ExitTriggeredAt` uses full APY. Let `segment_a_end = min(accrual_end, position.ExitTriggeredAt)` if exit is triggered, else `segment_a_end = accrual_end`. Duration in years from `LastBonusAccrual` to `segment_a_end` = `duration_years_A`. Then `accrued_A = position.AmountLocked × tier.InitialBonusAPY × duration_years_A` (only if `segment_a_end > LastBonusAccrual`).
-     - **Segment B — after exit trigger (decay):** Only if the position has triggered exit and `accrual_end > ExitTriggeredAt`. Let `segment_b_start = max(LastBonusAccrual, position.ExitTriggeredAt)` and `segment_b_end = min(accrual_end, position.ExitUnlockTime)`. In exit-commitment units: `t0 = (segment_b_start − position.ExitTriggeredAt) / tier.ExitCommitmentDuration`, `t1 = (segment_b_end − position.ExitTriggeredAt) / tier.ExitCommitmentDuration`. Cap at 1: `t0 = min(t0, 1)`, `t1 = min(t1, 1)`. Then `accrued_B = position.AmountLocked × tier.InitialBonusAPY × tier.ExitCommitmentDurationInYears × (t1 − t0) × (1 − (t1 + t0) / 2)`.
-  3. **Total accrued bonus:** `accrued_bonus = accrued_A + accrued_B` in the tier's bonus denom(s). Cap the result to the tier pool's available balance so the module never sends more than it holds.
-  4. **Pay and update:** Send `accrued_bonus` from the tier rewards pool to the position owner. Set `position.LastBonusAccrual = accrual_end`.
-- **When accrual starts:** Set when the position is **first delegated** (e.g. `DelegatedAtTime = block_time` and `LastBonusAccrual = block_time` in `MsgTierDelegate`). **No bonus accrues while the position is not delegated** — this forces lockers to delegate to a validator to earn rewards and thus provide security to the network. **Decay starts only when the user triggers exit**; until then, bonus APY is constant at InitialBonusAPY. If the position was previously undelegated and is delegated again, set `DelegatedAtTime = block_time` and `LastBonusAccrual = block_time` when delegating so accrual restarts from that time.
-- **When accrual stops:** (1) When the position is **not delegated** (`Validator` empty), no bonus accrues. (2) For positions that have triggered exit, bonus stops at `ExitUnlockTime` (no bonus for time after the exit commitment has elapsed). The calculation above enforces this by capping `accrual_end` at `ExitUnlockTime`. When paying bonus in `MsgWithdrawTierRewards`, the position must be delegated; if not delegated, no bonus is paid for the undelegated period.
+  - **`LastBonusAccrual`** (time): the last time up to which bonus has been accrued and paid. The next accrual period runs from `LastBonusAccrual` to the accrual end time.
+  - **`ExitUnlockTime`** (when exiting): used to cap the accrual end time so no bonus is paid after the exit commitment has elapsed.
+- **Calculation (fixed APY):** When paying tier rewards (e.g. in `MsgWithdrawTierRewards`), **the position must be delegated** (`Validator` set); otherwise skip bonus. **Single formula:**
+  1. **Accrual end:** `accrual_end = block_time`; if the position is exiting and `block_time > ExitUnlockTime`, set `accrual_end = ExitUnlockTime`.
+  2. **Duration in years:** `duration_years = (accrual_end − LastBonusAccrual)` in years (e.g. seconds ÷ SecondsPerYear).
+  3. **Accrued bonus:** `accrued_bonus = AmountLocked × BonusApy × duration_years`. Cap to the tier pool balance; pay to the position owner; set `LastBonusAccrual = accrual_end`.
+- **When accrual starts:** When the position is **first delegated**, set `LastBonusAccrual = block_time` (and `DelegatedAtTime = block_time`). No bonus accrues while the position is not delegated.
+- **When accrual stops:** (1) Position not delegated → no bonus. (2) Position exiting → no bonus after `ExitUnlockTime` (enforced by capping `accrual_end` at `ExitUnlockTime`).
 
 #### Summary
 
 | Reward type | Tracked in | Tier module state used | When calculated |
 |------------|------------|------------------------|------------------|
 | Base       | `x/distribution` (validator historical rewards, delegator starting info) | `position.Validator` (and 1:1 delegation) | On `MsgWithdrawTierRewards`: **only if position is delegated**; call distribution withdraw for (tier_module, position.Validator); forward full amount to owner. No base rewards when not delegated. |
-| Bonus      | Tier module: `position.DelegatedAtTime`, `position.LastBonusAccrual`, and when exiting `ExitTriggeredAt`, `ExitUnlockTime` | Same + `ExitTriggeredAt` for decay origin | On withdraw: **only if position is delegated**. **Decay starts only when exit is triggered.** Segment A (before trigger): full APY × duration in years. Segment B (after trigger): t = (time − ExitTriggeredAt)/ExitCommitmentDuration; accrued = AmountLocked × InitialBonusAPY × ExitCommitmentDurationInYears × (t1−t0)×(1−(t1+t0)/2); cap t at 1; cap accrual_end at ExitUnlockTime. Total = A + B; cap to pool; pay to owner; set `LastBonusAccrual = accrual_end`. No bonus when not delegated. |
+| Bonus      | Tier module: `position.DelegatedAtTime`, `position.LastBonusAccrual`; when exiting, `ExitUnlockTime` to cap accrual | Same | On withdraw: **only if position is delegated**. **Fixed APY:** accrued = AmountLocked × BonusApy × (duration in years); cap accrual_end at ExitUnlockTime; cap to pool; pay to owner; set `LastBonusAccrual = accrual_end`. No bonus when not delegated. |
 
 ### 4.6 When the tier position must be updated
 
@@ -197,12 +192,12 @@ The tier position is a state record that must stay consistent with staking and w
 |--------|----------------|--------|
 | **MsgLockTier** (optional args) | If **validator** provided: `Validator`, `DelegatedShares`, `DelegatedAtTime`, `LastBonusAccrual`. If **trigger_exit_immediately**: `ExitTriggeredAt`, `ExitUnlockTime` | Lock creates the position; optional delegate and/or trigger exit at creation (see §5.1). Same semantics as MsgTierDelegate and MsgTriggerExitFromTier when those options are used. |
 | **MsgCommitDelegationToTier** | Creates new position: `position_id`, `owner`, `tier_id`, `amount_locked` = committed amount, `Validator` = validator, `DelegatedShares` = transferred shares for that amount, `DelegatedAtTime` = block_time, `LastBonusAccrual` = block_time, `ExitTriggeredAt` = 0, `ExitUnlockTime` = 0 | Transfers **amount** (partial or full) of user's delegation to specified validator to tier module (no unbonding). Verification: amount ≤ user's delegation to validator, amount ≥ MinLockAmount, amount > 0 (see §5.2). |
-| **MsgTierDelegate** | `Validator`, `DelegatedShares`, `DelegatedAtTime`, `LastBonusAccrual` | Set to the chosen validator and the shares returned by staking. Set `DelegatedAtTime = block_time` and `LastBonusAccrual = block_time` so bonus accrual starts from delegation time (rewards only when delegated; decay will start only when/if user triggers exit). |
-| **MsgAddToTierPosition** | See “Add to position” below | **Allowed at any time**, including when the position is exiting. Updates listed in next subsection. |
+| **MsgTierDelegate** | `Validator`, `DelegatedShares`, `DelegatedAtTime`, `LastBonusAccrual` | Set to the chosen validator and the shares returned by staking. Set `DelegatedAtTime = block_time` and `LastBonusAccrual = block_time` so bonus accrual starts from delegation time (fixed APY; rewards only when delegated). |
+| **MsgAddToTierPosition** | See “Add to position” below | **Not allowed when exiting** (reject if `ExitTriggeredAt != 0`). Updates listed in next subsection. |
 | **Unbonding completes** (after MsgTierUndelegate) | `Validator` → empty, `DelegatedShares` → 0; optionally clear `DelegatedAtTime` | When the tier module’s unbonding for this position’s shares completes, the position is no longer delegated. Clear delegation state so the position is “undelegated”; **no rewards (base or bonus) accrue until the owner delegates again**. When they delegate again, `DelegatedAtTime` is set anew. Requires tracking which unbonding entry belongs to which position (e.g. via staking hook or EndBlocker that matches completion to position). |
-| **Redelegation completes** (after MsgTierRedelegate) | `Validator` → destination validator, `DelegatedShares` → new shares on destination | Staking returns the shares issued on the destination; store them so future undelegate/withdraw uses the correct shares. `DelegatedAtTime` is unchanged (bonus accrual continues; when exiting, decay is from `ExitTriggeredAt`). |
-| **MsgTriggerExitFromTier** | `ExitTriggeredAt`, `ExitUnlockTime` | Position enters “exiting” state; **decay starts** (APY → 0 over exit commitment); bonus stops at `ExitUnlockTime`. |
-| **MsgRelockTierPosition** (optional **trigger_exit_immediately**) | **First:** settle and pay accrued base (if delegated) and bonus from `LastBonusAccrual` to block_time; set `LastBonusAccrual` = block_time. **Then:** if **trigger_exit_immediately**: `ExitTriggeredAt` = block_time, `ExitUnlockTime` = block_time + ExitCommitmentDuration; else `ExitTriggeredAt` = 0, `ExitUnlockTime` = 0. Always `DelegatedAtTime` = block_time | Same optional trigger as MsgLockTier. No rewards lost: settlement required before reset (see §5.5). |
+| **Redelegation completes** (after MsgTierRedelegate) | `Validator` → destination validator, `DelegatedShares` → new shares on destination | Staking returns the shares issued on the destination; store them so future undelegate/withdraw uses the correct shares. `DelegatedAtTime` is unchanged (bonus accrual continues; fixed APY). |
+| **MsgTriggerExitFromTier** | `ExitTriggeredAt`, `ExitUnlockTime` | Position enters “exiting” state; bonus stops at `ExitUnlockTime` (no bonus after exit commitment elapsed). |
+| **MsgRelockTierPosition** (optional **trigger_exit_immediately**) | **Allowed when exiting or not.** First settle and pay accrued base (if delegated) and bonus (cap at ExitUnlockTime when exiting); then **clear** exit state (or set at relock time if trigger_exit_immediately) and set `LastBonusAccrual` = block_time, `DelegatedAtTime` = block_time — position **restarts from relock date**. | Fixed APY (see §5.5). |
 | **MsgWithdrawTierRewards** | `LastBonusAccrual` → accrual_end | So bonus is not double-counted for the same period. |
 | **MsgTransferTierPosition** (optional) | `Owner` | Transfer ownership; no change to delegation or exit state. |
 | **Slashing** | `AmountLocked` (and possibly `DelegatedShares`) | When the validator or the tier module’s delegation is slashed, the token value of the delegation drops. Update the position so **AmountLocked** reflects the **current** value of the delegation (e.g. tokens from `staking.TokensFromShares(position.Validator, position.DelegatedShares)` or equivalent). Otherwise (1) bonus APY would accrue on the pre-slash amount, and (2) on claim the module would owe `AmountLocked` but only hold the slashed amount. Implementation: use a staking hook (e.g. `AfterValidatorSlashed` / `BeforeValidatorSlashed`) or periodic reconciliation to detect slashing and update each affected position’s `AmountLocked` (and `DelegatedShares` if the chain reduces shares on slash). |
@@ -213,17 +208,17 @@ The tier position is a state record that must stay consistent with staking and w
 
 #### Add to position: what is updated (MsgAddToTierPosition)
 
-When the owner adds tokens to an existing position (`position_id`), the following are updated. **Add is allowed at any time**, including when the position is exiting (`ExitTriggeredAt` set).
+When the owner adds tokens to an existing position (`position_id`), the following are updated. **Add is only allowed when the position is not exiting** (reject if `ExitTriggeredAt != 0`).
 
 | Field / action | Update |
 |----------------|--------|
 | **AmountLocked** | Increase by the added `amount`: `position.AmountLocked += amount`. Tokens are transferred from the owner to the tier module before this update. |
 | **Validator** | Unchanged (position remains delegated to the same validator or remains undelegated). |
 | **DelegatedShares** | **If position is delegated** (`Validator != ""`): call `staking.Delegate(ctx, tier_module_account, position.Validator, amount)` to delegate the **new** tokens to the same validator. Staking returns `newShares`. Set `position.DelegatedShares += newShares`. **If position is not delegated:** no change. |
-| **DelegatedAtTime** | Unchanged (bonus accrual continues; when exiting, decay is from ExitTriggeredAt — new tokens accrue bonus at the same rate as the existing amount). |
-| **LastBonusAccrual** | **Option A (simple):** Leave unchanged. Bonus will accrue on the full (increased) `AmountLocked` for the period since `LastBonusAccrual` using the decayed APY formula; the newly added amount is effectively credited with bonus from the last accrual time (slightly favorable to the user). **Option B (fair):** Before adding, settle bonus to now: compute and pay accrued bonus on the **current** `AmountLocked` from `LastBonusAccrual` to `block_time`, then set `LastBonusAccrual = block_time`. Then add the amount. The new tokens accrue bonus only from add-time onward. |
+| **DelegatedAtTime** | Unchanged (bonus accrual continues; fixed APY — new tokens accrue bonus at the same rate as the existing amount). |
+| **LastBonusAccrual** | **Option A (simple):** Leave unchanged. Bonus will accrue on the full (increased) `AmountLocked` for the period since `LastBonusAccrual` using the fixed APY formula; the newly added amount is effectively credited with bonus from the last accrual time (slightly favorable to the user). **Option B (fair):** Before adding, settle bonus to now: compute and pay accrued bonus on the **current** `AmountLocked` from `LastBonusAccrual` to `block_time`, then set `LastBonusAccrual = block_time`. Then add the amount. The new tokens accrue bonus only from add-time onward. |
 | **CreatedAtHeight**, **CreatedAtTime** | Unchanged (position creation time is preserved). |
-| **ExitTriggeredAt**, **ExitUnlockTime** | Unchanged (add is allowed even when exiting). |
+| **ExitTriggeredAt**, **ExitUnlockTime** | Unchanged (add is only when not exiting). |
 | **Owner**, **TierId**, **PositionId** | Unchanged. |
 
 ---
@@ -234,7 +229,7 @@ When the owner adds tokens to an existing position (`position_id`), the followin
 
 **Message:** `MsgLockTier(tier_id, amount)` with optional fields:
 - **validator** (optional): if set, delegate the locked amount to this validator at lock time (lock + delegate in one step).
-- **trigger_exit_immediately** (optional, bool): if true, set exit state at creation so the exit commitment and **decay start from lock time**; otherwise the position is not exiting and the user may trigger exit later via MsgTriggerExitFromTier.
+- **trigger_exit_immediately** (optional, bool): if true, set exit state at creation so the **exit commitment starts from lock time**; otherwise the position is not exiting and the user may trigger exit later via MsgTriggerExitFromTier.
 
 ```
 User -> MsgLockTier(tier_id, amount [, validator] [, trigger_exit_immediately])
@@ -258,7 +253,7 @@ User -> MsgLockTier(tier_id, amount [, validator] [, trigger_exit_immediately])
   -> Emit event (position_id, owner, tier_id, amount [, validator] [, exiting])
 ```
 
-Tokens are held by the tier module. If no validator was specified, the position is not delegated and the user can call `MsgTierDelegate` later. If `trigger_exit_immediately` was set, the position is already exiting and decay runs from creation (or from delegation time if both options were used).
+Tokens are held by the tier module. If no validator was specified, the position is not delegated and the user can call `MsgTierDelegate` later. If `trigger_exit_immediately` was set, the position is already exiting and the exit commitment runs from creation (or from delegation time if both options were used).
 
 ### 5.2 Commit existing delegation to tier
 
@@ -301,7 +296,7 @@ No bank transfer: the delegation ownership for that amount/shares moves from (ow
 ```
 User -> MsgAddToTierPosition(position_id, amount)
   -> Auth: signer == TierPosition.Owner
-  -> Load TierPosition; require position exists (add allowed at any time, including when exiting)
+  -> Load TierPosition; require position exists; reject if position is exiting (ExitTriggeredAt != 0) — add not allowed when exiting
   -> Validate amount > 0; denom = bond denom
   -> Bank.SendCoinsFromAccountToModule(owner, tieredrewards.ModuleName, amount)
   -> position.AmountLocked += amount
@@ -313,7 +308,7 @@ User -> MsgAddToTierPosition(position_id, amount)
   -> Emit event (position_id, owner, amount_added, new_total)
 ```
 
-Only the owner can add; add is allowed at any time (including when the position is exiting). See §4.6 “Add to position: what is updated” for the full list of fields updated.
+Only the owner can add; add is **not allowed when the position is exiting** (reject if `ExitTriggeredAt != 0`). See §4.6 “Add to position: what is updated” for the full list of fields updated.
 
 ### 5.4 Tier delegate / undelegate / redelegate (internal only)
 
@@ -326,7 +321,7 @@ Tier-locked tokens can only be staked **within** the tier mechanism. The **tier 
   -> Load TierPosition; require position not already delegated (Validator == "")
   -> Staking.Delegate(ctx, tier_module_account, validator, position.AmountLocked)
   -> Staking returns newShares (shares issued for this delegation)
-  -> Update position: Validator = validator, DelegatedShares = newShares; DelegatedAtTime = block_time; LastBonusAccrual = block_time (rewards start when delegated; decay starts only when exit is triggered)
+  -> Update position: Validator = validator, DelegatedShares = newShares; DelegatedAtTime = block_time; LastBonusAccrual = block_time (rewards start when delegated; fixed APY)
   -> Emit event (position_id, owner, validator)
 ```
 
@@ -354,24 +349,24 @@ These tokens **cannot** be used outside the tier module (no external LST); they 
 
 ### 5.5 Relock position
 
-**Message:** `MsgRelockTierPosition(position_id [, trigger_exit_immediately])`. Same optional **trigger_exit_immediately** as MsgLockTier. Allows a tier staker to **relock** their position: the bonus clock is reset and, if **trigger_exit_immediately** is true, exit is triggered at relock time (decay runs from relock); otherwise exit state is cleared (full APY until they trigger exit later). **No rewards are lost:** all accrued rewards up to relock time are settled and paid to the owner before the reset is applied.
+**Message:** `MsgRelockTierPosition(position_id [, trigger_exit_immediately])`. Same optional **trigger_exit_immediately** as MsgLockTier. Relock **clears the exit state** (or sets it anew at relock time if trigger_exit_immediately) and **restarts the position from the relock date**: accrued rewards to relock time are settled and paid first; then exit state and bonus clock are updated from relock time. **No rewards are lost:** all accrued rewards up to relock time are settled and paid to the owner before the reset.
 
-**1. Settle rewards first (required — no rewards lost):**
-- If the position is **delegated**: withdraw base rewards from distribution for this position (same as in MsgWithdrawTierRewards) and send to owner; compute and pay **accrued bonus** from `LastBonusAccrual` to `block_time` (same formula as MsgWithdrawTierRewards, cap to pool) and send to owner; set `LastBonusAccrual = block_time`.
+**1. Settle rewards first (always — no rewards lost):**
+- If the position is **delegated**: withdraw base rewards and send to owner; compute and pay **accrued bonus** from `LastBonusAccrual` to `block_time` (same formula as MsgWithdrawTierRewards; when exiting, cap accrual end at `ExitUnlockTime`; cap to pool) and send to owner; set `LastBonusAccrual = block_time`.
 - If the position is **not delegated**: **nothing is paid** (no base, no bonus). Set `LastBonusAccrual = block_time` so the clock is reset for when they delegate later.
 
-**2. Exit state (configurable, same as MsgLockTier):**
-- If **trigger_exit_immediately** is true: `ExitTriggeredAt = block_time`, `ExitUnlockTime = block_time + tiers[tier_id].ExitCommitmentDuration` — position is in "exiting" state, decay runs from relock time (t = 0 at relock, t = 1 at ExitUnlockTime).
-- If **trigger_exit_immediately** is false or omitted: `ExitTriggeredAt = 0`, `ExitUnlockTime = 0` — exit state is cleared; position is not exiting, full InitialBonusAPY until the user calls MsgTriggerExitFromTier later.
+**2. Clear exit state and restart from relock date (same as MsgLockTier for exit option):**
+- If **trigger_exit_immediately** is true: `ExitTriggeredAt = block_time`, `ExitUnlockTime = block_time + tiers[tier_id].ExitCommitmentDuration` — position is in "exiting" state; bonus stops at ExitUnlockTime (fixed APY until then).
+- If **trigger_exit_immediately** is false or omitted: `ExitTriggeredAt = 0`, `ExitUnlockTime = 0` — exit state is cleared; position is not exiting, full BonusApy until the user calls MsgTriggerExitFromTier later.
 
 **3. Reset bonus clock (always):**
-- `DelegatedAtTime = block_time` (so the decay formula, when exit is triggered, uses relock time as the effective start; or if not triggering exit, bonus accrual restarts from relock time at full APY).
+- `DelegatedAtTime = block_time` (bonus accrual restarts from relock time at fixed APY).
 
 ```
 User -> MsgRelockTierPosition(position_id [, trigger_exit_immediately])
   -> Auth: signer == TierPosition.Owner
   -> Load TierPosition; require position exists; load tier
-  -> Phase 1 — Settle rewards (no rewards lost):
+  -> Phase 1 — Settle rewards (no rewards lost; when exiting, cap bonus accrual at ExitUnlockTime):
        If position is delegated: withdraw base rewards (distribution) and send to owner; update delegator starting info; compute accrued bonus from LastBonusAccrual to block_time (same as MsgWithdrawTierRewards); cap to pool; send to owner
        If position is not delegated: nothing is paid
        position.LastBonusAccrual = block_time
@@ -386,7 +381,7 @@ User -> MsgRelockTierPosition(position_id [, trigger_exit_immediately])
   -> Emit event (position_id, owner, relock_time [, ExitUnlockTime if triggering])
 ```
 
-Relock is allowed **at any time** (whether the position is currently exiting or not). **If the position is not delegated, no rewards can be earned** until the owner delegates; relock only resets exit state and clocks (nothing is paid when not delegated). If already exiting and the user relocks **without** trigger_exit_immediately, exit state is cleared and they get full APY until they trigger exit again (once delegated). If they relock **with** trigger_exit_immediately, the new exit commitment and decay run from relock time (previous ExitUnlockTime is effectively replaced).
+Relock is **allowed at any time**, including when the position is exiting. When relocking while exiting, the exit state is **cleared** (or replaced: if **trigger_exit_immediately** is true, new exit commitment runs from relock time; otherwise exit state is cleared and the position gets fixed APY until they trigger exit again). The position **restarts from the relock date** (bonus clock and exit state from relock time). **If the position is not delegated**, no rewards are paid on relock; relock only resets exit state and clocks.
 
 ### 5.6 Trigger exit from tier
 
@@ -415,7 +410,7 @@ User -> MsgWithdrawFromTier(position_id)
 
 No bonus is paid after `ExitUnlockTime`; this message only transfers tokens and burns the position.
 
-### 5.8 Withdraw tier rewards (base + decayed APY bonus)
+### 5.8 Withdraw tier rewards (base + fixed APY bonus)
 
 See **§4.5** for how base and bonus rewards are tracked and calculated.
 
@@ -433,18 +428,18 @@ User -> MsgWithdrawTierRewards(position_id)
 
   --- Phase 2: Redistribute to the tier locker ---
   -> Base: Send the base reward (received in Phase 1) from the tier module to the position owner.
-  -> Bonus (decayed APY):
+  -> Bonus (fixed APY):
        accrual_end = block_time; if exiting (ExitTriggeredAt set) and block_time > ExitUnlockTime, accrual_end = ExitUnlockTime (no bonus after)
-       t0 = (position.LastBonusAccrual - position.DelegatedAtTime) / tier.ExitCommitmentDuration; t1 = (accrual_end - position.DelegatedAtTime) / tier.ExitCommitmentDuration; cap t0, t1 at 1
-       accrued = amount_locked × InitialBonusAPY × tier.ExitCommitmentDurationInYears × (t1−t0) × (1 − (t1+t0)/2)   // integer, stored on tier
-       Cap to tier pool balance; send from tier rewards pool to position owner in BonusDenoms
+       duration_years = (accrual_end − LastBonusAccrual) in years (e.g. seconds / SecondsPerYear)
+       accrued_bonus = position.AmountLocked × tier.BonusApy × duration_years
+       Cap accrued_bonus to tier pool balance; send from tier rewards pool to position owner in BonusDenoms
   -> Update position.LastBonusAccrual = accrual_end
   -> Emit event (position_id, owner, base_amount, bonus_amount)
 ```
 
 - **Order of operations:** Base is withdrawn from distribution and received by the module **before** any redistribution. The module then redistributes to the tier locker: first the base reward to the owner, then the bonus (from the tier pool) to the owner. This ensures base rewards are settled with distribution first; only then does the module pay out to the position owner.
 - Base rewards: tier module is the delegator; its withdraw address can be set to itself so rewards arrive at the module, then the module attributes per position (by share of delegation) and sends to each owner when they call `WithdrawTierRewards`, or the module can use a single withdraw address per position (if the chain supports it). Simplest: one delegation per position so that a single withdraw gives one position’s base rewards to that owner.
-- **Decayed APY** is accrued from `LastBonusAccrual` to accrual_end: APY(t) = InitialBonusAPY×(1−t) (per year), with t in exit-commitment units; use tier.ExitCommitmentDurationInYears (stored); accrued = AmountLocked × InitialBonusAPY × tier.ExitCommitmentDurationInYears × (t1−t0)×(1−(t1+t0)/2); rate drops linearly to 0 at t = 1; if the position is exiting, accrual stops at `ExitUnlockTime` (no bonus after). Cap bonus to pool balance so users do not fail on insufficient pool.
+- **Fixed APY:** accrued = AmountLocked × BonusApy × (duration in years) from `LastBonusAccrual` to accrual_end; if the position is exiting, cap accrual_end at `ExitUnlockTime` (no bonus after). Cap bonus to pool balance so users do not fail on insufficient pool.
 
 #### Optimization: base reward withdrawal batching
 
@@ -548,7 +543,7 @@ Implementations may use `AmountLocked` as the voting power per position (bond de
 
 Tier-locked tokens **cannot** be delegated or redelegated using normal staking messages (undelegation only after trigger exit). They are **internal** to the tier mechanism:
 
-- **MsgLockTier**, **MsgCommitDelegationToTier(tier_id, validator, amount)** (commit partial or full existing delegation to tier without undelegating; amount ≤ delegation, amount ≥ MinLockAmount), **MsgAddToTierPosition** (add at any time, including when exiting), **MsgRelockTierPosition(position_id [, trigger_exit_immediately])** (relock: optional trigger exit at relock time, same as MsgLockTier; reset clock; no rewards lost — settle first), **MsgTierDelegate(position_id, validator)**, **MsgTierRedelegate(position_id, dst_validator)** are the ways to lock or move tier-locked stake. **MsgTierUndelegate(position_id)** is **only allowed after the user has triggered exit** — tier lockers cannot voluntarily undelegate while in the tier. The tier module account is always the delegator; each position is delegated as a whole (full amount to one validator).
+- **MsgLockTier**, **MsgCommitDelegationToTier(tier_id, validator, amount)** (commit partial or full existing delegation to tier without undelegating; amount ≤ delegation, amount ≥ MinLockAmount), **MsgAddToTierPosition** (add only when not exiting; reject if exiting), **MsgRelockTierPosition(position_id [, trigger_exit_immediately])** (relock allowed at any time, including when exiting: settle rewards first, then clear exit state or set at relock time; position restarts from relock date), **MsgTierDelegate(position_id, validator)**, **MsgTierRedelegate(position_id, dst_validator)** are the ways to lock or move tier-locked stake. **MsgTierUndelegate(position_id)** is **only allowed after the user has triggered exit** — tier lockers cannot voluntarily undelegate while in the tier. The tier module account is always the delegator; each position is delegated as a whole (full amount to one validator).
 - When a user calls **MsgTierUndelegate** (only valid after trigger exit) or **MsgTierRedelegate**, staking runs as usual (unbonding/redelegation); distribution may run its hooks and pay base rewards to the tier module. The tier module attributes those rewards to the correct position(s). Design choice: require users to call **MsgWithdrawTierRewards** before **MsgTierUndelegate** so base + APY bonus are paid first.
 - **Withdraw from tier:** User can trigger exit anytime with **MsgTriggerExitFromTier** (starts exit commitment, X years per tier); after exit commitment has elapsed, **MsgWithdrawFromTier** claims tokens (no more bonus). If delegated, user must have called **MsgTierUndelegate** (allowed only after trigger exit) and waited for unbonding before claim.
 
@@ -560,16 +555,16 @@ Tier-locked tokens **cannot** be delegated or redelegated using normal staking m
 |------|----------|
 | Lock expired | No bonus; base only. Position can be claimed/burned via MsgClaimExpiredTier. |
 | No lock | No bonus; base only. |
-| Pool empty / insufficient | Base withdrawal still succeeds; bonus (decayed APY accrual) capped to available pool balance (or zero). |
+| Pool empty / insufficient | Base withdrawal still succeeds; bonus (fixed APY accrual) capped to available pool balance (or zero). |
 | Slashing | The position must be updated when the delegation is slashed: set **AmountLocked** (and **DelegatedShares** if the chain changes shares) to the current value of the delegation (see §4.6). Base rewards and stake are reduced by distribution/staking; bonus APY then accrues on the updated amount. |
 | Validator leaves set (jailed, unbonding, removed) | The delegation still exists; the position’s `Validator` and `DelegatedShares` stay valid. No new block rewards while the validator is inactive. User should **MsgTierRedelegate** to an active validator or **MsgTierUndelegate** to unbond. No mandatory position update (see §4.6). Optional: chain may auto-undelegate when a validator is removed; then unbonding-completion update applies. |
 | Multiple denoms in base | Base rewards per denom; bonus can be restricted to bond denom or configurable. |
 | Trigger exit / claim | User can trigger exit **anytime**. **MsgTriggerExitFromTier** starts exit commitment (wait X years per tier); then **MsgWithdrawFromTier** claims tokens. No bonus after exit commitment elapsed. If delegated, must undelegate and wait unbonding before claim. |
 | Multiple positions per owner | Each position is an independent state record; bonus APY and base attribution per position. |
-| Add to position when exit triggered | **Allowed.** Top-up is always possible; `MsgAddToTierPosition` is allowed even when the position is exiting (`ExitTriggeredAt` set). |
-| Relock when not exiting | **Allowed.** MsgRelockTierPosition(position_id [, trigger_exit_immediately]) settles accrued rewards first (no rewards lost). If trigger_exit_immediately: sets ExitTriggeredAt, ExitUnlockTime at relock time; else clears exit state. Bonus clock always resets. |
+| Add to position when exit triggered | **Reject.** `MsgAddToTierPosition` is not allowed when the position is exiting (`ExitTriggeredAt != 0`); cannot top up while exiting. |
+| Relock (any time, including when exiting) | **Allowed.** MsgRelockTierPosition settles accrued rewards first (when exiting, bonus capped at ExitUnlockTime). Then **clears** exit state (or sets at relock time if trigger_exit_immediately) and **restarts from relock date** (LastBonusAccrual, DelegatedAtTime = block_time). No rewards lost. |
 | Lock amount below tier minimum | **Reject.** `MsgLockTier(tier_id, amount, ...)` requires `amount >= tiers[tier_id].MinLockAmount`. If amount is less than the tier’s minimum, the message fails validation. |
-| Lock with trigger_exit_immediately but no validator | **Allowed.** Position is created in exiting state (decay clock starts). No rewards until the user delegates via MsgTierDelegate; once delegated, bonus accrues with decay from the lock-time trigger. |
+| Lock with trigger_exit_immediately but no validator | **Allowed.** Position is created in exiting state (exit commitment starts). No rewards until the user delegates via MsgTierDelegate; once delegated, bonus accrues at fixed APY until ExitUnlockTime. |
 | Commit delegation: insufficient delegation or below minimum | **Reject.** MsgCommitDelegationToTier requires: signer has a delegation to the specified validator; **amount** ≤ that delegation's token amount; **amount** ≥ tier MinLockAmount; amount > 0. If the user has no delegation to the validator, or amount exceeds their delegation, or amount is below the tier minimum, the message fails. |
 | Position not delegated | **No rewards.** Base and bonus rewards accrue **only when the position is delegated** to a validator. A locker who never delegates receives no rewards. Undelegation is only allowed after trigger exit, so while in the tier a position is either delegated (earning rewards) or in unbonding after exit; there is no voluntary "undelegated and idle" state. |
 
@@ -582,7 +577,7 @@ Tier-locked tokens **cannot** be delegated or redelegated using normal staking m
 - **Commit delegation verification:** **MsgCommitDelegationToTier(tier_id, validator, amount)** requires amount > 0, amount ≥ tier MinLockAmount, and amount ≤ signer's delegation to that validator. Partial commit is allowed. One message creates one tier position (one validator; the position itself cannot be split across validators).  
 - **Rewards only when delegated:** Tier lockers receive **no** base or bonus rewards unless the position is delegated to a validator. This enforces that lockers contribute to network security to earn rewards.  
 - **No undelegation until exit:** **MsgTierUndelegate** is only allowed when the position has triggered exit (`ExitTriggeredAt != 0`). Tier lockers cannot voluntarily undelegate while in the tier, so they keep providing security until they commit to leaving.  
-- **No double bonus:** Bonus is decayed APY accrued over time; tracked per position (`DelegatedAtTime`, `LastBonusAccrual`); paid on `MsgWithdrawTierRewards` (and optionally on TierUndelegate/TierRedelegate).  
+- **No double bonus:** Bonus is fixed APY accrued over time; tracked per position (`DelegatedAtTime`, `LastBonusAccrual`); paid on `MsgWithdrawTierRewards` (and optionally on TierUndelegate/TierRedelegate).  
 - **Pool balance:** Never send more than pool balance; cap bonus payout to available balance.  
 - **Tier-only delegation:** Only tier module can delegate/undelegate/redelegate tier-locked tokens; staking messages from users do not affect tier positions.  
 - **Withdraw address:** Base rewards attributed to positions and sent to owners; bonus paid to position owner.
@@ -606,7 +601,7 @@ Because the **tier module** is the delegator in staking, base rewards are paid t
 - Use a single withdraw address (the tier module account) and attribute base rewards internally by position when users call `MsgWithdrawTierRewards`, or  
 - Extend `x/distribution` with a hook (e.g. `AfterDelegationRewardsWithdrawn`) so the tier module can attribute and forward base to position owners when distribution pays out.  
 
-Bonus is **decayed APY** from the tier pool, not a multiplier on base; the hook would only affect how **base** rewards are attributed, not the bonus formula.
+Bonus is **fixed APY** from the tier pool, not a multiplier on base; the hook would only affect how **base** rewards are attributed, not the bonus formula.
 
 ---
 
@@ -639,11 +634,11 @@ x/tieredrewards/
 
 ## 15. Summary
 
-- **Tier = lock duration + decayed bonus APY + minimum lock amount.** Each tier defines `InitialBonusAPY` and `MinLockAmount`. **MsgLockTier** (with optional validator and trigger_exit_immediately) and **MsgCommitDelegationToTier(tier_id, validator, amount)** (commit partial or full existing delegation without undelegating; verification: amount ≤ delegation, amount ≥ MinLockAmount) create tier positions. **Rewards (base and bonus) are paid only when the position is delegated**. **Undelegation is only allowed after the user has triggered exit**. Tier-locked tokens are **internal**: **MsgTierDelegate**, **MsgTierRedelegate**, **MsgTierUndelegate** (after trigger exit) move stake; the tier module account is the delegator. **MsgCommitDelegationToTier** requires a chain extension to transfer delegation (same validator, no unbonding).  
-- **Tier positions are state records:** each lock is a `TierPosition` (position_id, owner, tier_id, amount_locked, created_at, exit_triggered_at, exit_unlock_time, validator, delegated_shares, delegated_at_time, last_bonus_accrual). A position cannot be broken down; the full amount is delegated to one validator. The owner can **add** to an existing position via `MsgAddToTierPosition` **at any time**, including when exiting, and can **relock** via `MsgRelockTierPosition` (optional trigger_exit_immediately, same as MsgLockTier; resets clock; accrued rewards settled first so none lost). Store: `PositionByID`, `PositionsByOwner`, `AllTierPositions`.  
+- **Tier = lock duration + fixed bonus APY + minimum lock amount.** Each tier defines `BonusApy` and `MinLockAmount`. **MsgLockTier** (with optional validator and trigger_exit_immediately) and **MsgCommitDelegationToTier(tier_id, validator, amount)** (commit partial or full existing delegation without undelegating; verification: amount ≤ delegation, amount ≥ MinLockAmount) create tier positions. **Rewards (base and bonus) are paid only when the position is delegated**. **Undelegation is only allowed after the user has triggered exit**. Tier-locked tokens are **internal**: **MsgTierDelegate**, **MsgTierRedelegate**, **MsgTierUndelegate** (after trigger exit) move stake; the tier module account is the delegator. **MsgCommitDelegationToTier** requires a chain extension to transfer delegation (same validator, no unbonding).  
+- **Tier positions are state records:** each lock is a `TierPosition` (position_id, owner, tier_id, amount_locked, created_at, exit_triggered_at, exit_unlock_time, validator, delegated_shares, delegated_at_time, last_bonus_accrual). A position cannot be broken down; the full amount is delegated to one validator. The owner can **add** to an existing position via `MsgAddToTierPosition` **only when not exiting** (reject if exiting), and can **relock** via `MsgRelockTierPosition` **at any time** (including when exiting): settles accrued rewards first, then clears exit state (or sets at relock time if trigger_exit_immediately) and **restarts from relock date**. Store: `PositionByID`, `PositionsByOwner`, `AllTierPositions`.  
 - **Withdraw from tier:** User can trigger exit **at any time**. **MsgTriggerExitFromTier** starts the exit commitment (wait X years, per tier); once it has elapsed, **no more bonus** and **MsgWithdrawFromTier** claims tokens (after unbonding if delegated). Optional `MsgClaimExpiredTier` for positions past `ExitUnlockTime`.  
-- **Bonus = decayed APY** on locked amount: full APY (InitialBonusAPY) until exit is triggered, then drops linearly to 0 at end of exit commitment; accrued and paid from a **tier rewards pool** when user calls `MsgWithdrawTierRewards` (and optionally on TierUndelegate/TierRedelegate).  
+- **Bonus = fixed APY** on locked amount: constant BonusApy; accrued and paid from a **tier rewards pool** when user calls `MsgWithdrawTierRewards` (and optionally on TierUndelegate/TierRedelegate); bonus stops at ExitUnlockTime.  
 - **Integration:** Tier module holds tokens and delegates via staking; base rewards received by module and attributed to positions; bonus from pool.  
 - **Governance voting:** Tier lockers vote with their address; voting power includes their delegated tier positions via a custom gov tally and tier’s `GetVotingPowerForAddress` (§8).  
-- **External pool:** Filled by governance or another module; tier module pays decayed-APY bonus from it.  
+- **External pool:** Filled by governance or another module; tier module pays fixed-APY bonus from it.  
 - **Safety:** Cap bonus to pool balance; only tier module can delegate/undelegate/redelegate tier-locked tokens; single authority for params and funding.
