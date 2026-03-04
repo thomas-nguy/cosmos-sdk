@@ -428,12 +428,16 @@ User -> MsgWithdrawTierRewards(position_id)
 
   --- Phase 2: Redistribute to the tier locker ---
   -> Base: Send the base reward (received in Phase 1) from the tier module to the position owner.
-  -> Bonus (fixed APY):
-       accrual_end = block_time; if exiting (ExitTriggeredAt set) and block_time > ExitUnlockTime, accrual_end = ExitUnlockTime (no bonus after)
-       duration_years = (accrual_end − LastBonusAccrual) in years (e.g. seconds / SecondsPerYear)
-       accrued_bonus = position.AmountLocked × tier.BonusApy × duration_years
-       Cap accrued_bonus to tier pool balance; send from tier rewards pool to position owner in BonusDenoms
-  -> Update position.LastBonusAccrual = accrual_end
+  -> Bonus (fixed APY): pay only for the accrual interval [LastBonusAccrual, accrual_end]. Compute as follows:
+       1. accrual_end_time = block_time
+          If position.ExitTriggeredAt != 0 and block_time > position.ExitUnlockTime, set accrual_end_time = position.ExitUnlockTime (no bonus after exit commitment).
+       2. accrual_interval_seconds = (accrual_end_time − position.LastBonusAccrual) in seconds (must be ≥ 0; if 0, skip bonus).
+       3. duration_years = accrual_interval_seconds / SecondsPerYear  (chain constant, e.g. 31_557_600 for 365.25 days).
+       4. rewards = position.AmountLocked × tier.BonusApy × duration_years
+          (AmountLocked and BonusApy in their stored units; result is the bonus reward amount in the same unit as the tier’s bonus payout denom.)
+       5. bonus_to_pay = min(rewards, tier_pool_available_balance) for the bonus denom.
+       6. Send bonus_to_pay from the tier rewards pool to position.Owner (in tier.BonusDenoms).
+  -> Set position.LastBonusAccrual = accrual_end_time
   -> Emit event (position_id, owner, base_amount, bonus_amount)
 ```
 
