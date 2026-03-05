@@ -405,7 +405,8 @@ User -> MsgWithdrawTierRewards(position_id)
 
 - **Order of operations:** Base is withdrawn from distribution and received by the module **before** any redistribution. The module then redistributes to the tier locker: first the base reward to the owner, then the bonus (from the tier pool) to the owner. This ensures base rewards are settled with distribution first; only then does the module pay out to the position owner.
 - Base rewards: tier module is the delegator; its withdraw address can be set to itself so rewards arrive at the module, then the module attributes per position (by share of delegation) and sends to each owner when they call `WithdrawTierRewards`, or the module can use a single withdraw address per position (if the chain supports it). Simplest: one delegation per position so that a single withdraw gives one position’s base rewards to that owner.
-- **Fixed APY:** accrued = AmountLocked × BonusApy × (duration in years) from `LastBonusAccrual` to accrual_end; if the position is exiting, cap accrual_end at `ExitUnlockTime` (no bonus after). Cap bonus to pool balance so users do not fail on insufficient pool.
+- **Fixed APY:** accrued = AmountLocked × BonusApy × (duration in years) from `LastBonusAccrual` to accrual_end; if the position is exiting, cap accrual_end at `ExitUnlockTime` (no bonus after). In case the pool balance is unefficient, fails the transaction so that user can claim back later
+
 
 #### Optimization: base reward withdrawal batching
 
